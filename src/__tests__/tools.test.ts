@@ -3337,8 +3337,15 @@ describe("explain", () => {
     const result = await h.handleToolCall("explain", {});
     expect(typeof result.text).toBe("string");
     expect(result.text).toContain("Reference Library");
+    // All top-level groups (one per docs/explain/resources/ subdirectory) must
+    // appear — a bug that dropped one from buildTopLevelIndex would otherwise
+    // slip through with only a couple of groups asserted.
     expect(result.text).toContain("aiagent");
+    expect(result.text).toContain("code");
+    expect(result.text).toContain("nodes");
     expect(result.text).toContain("platform");
+    expect(result.text).toContain("voice");
+    expect(result.text).toContain("xapp");
   });
 
   it("a known group topic returns its primer plus its topic index", async () => {
@@ -3367,6 +3374,23 @@ describe("explain", () => {
   it("trims whitespace-only topic to the top-level index", async () => {
     const result = await h.handleToolCall("explain", { topic: "   " });
     expect(result.text).toContain("Reference Library");
+  });
+
+  it("an explicit empty-string topic returns the top-level index", async () => {
+    const result = await h.handleToolCall("explain", { topic: "" });
+    expect(result.text).toContain("Reference Library");
+  });
+
+  it("topic lookup is case-sensitive: a differently-cased known topic is unknown", async () => {
+    // CONTENT keys come verbatim from frontmatter `topic:` values, which the
+    // build script never normalizes — pin the current exact-match behavior so
+    // a future refactor (e.g. switching to a case-insensitive lookup) is a
+    // deliberate, visible change rather than a silent one.
+    const result = await h.handleToolCall("explain", {
+      topic: "Agent-Avatar-Image",
+    });
+    expect(result.text).toContain("Unknown topic: 'Agent-Avatar-Image'");
+    expect(result.text).toContain("Available topics");
   });
 });
 

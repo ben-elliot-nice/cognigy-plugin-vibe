@@ -279,14 +279,16 @@ ${contentEntries}
 }
 
 /**
- * Scan docs/explain/resources/, validate it, and return the generated module
- * source (already formatted with the project's Prettier config, so the
- * committed output never drifts from `npx prettier --write`). Throws with all
- * collected errors joined if the tree is invalid.
+ * Scan docs/explain/resources/ (or `resourcesDir`, if provided — used by
+ * tests to exercise validation-error paths against fixture trees without
+ * touching the real docs/explain/resources/), validate it, and return the
+ * generated module source (already formatted with the project's Prettier
+ * config, so the committed output never drifts from `npx prettier --write`).
+ * Throws with all collected errors joined if the tree is invalid.
  */
-export async function build() {
+export async function build(resourcesDir = RESOURCES) {
   const errors = [];
-  const root = scanDir(RESOURCES, "", errors);
+  const root = scanDir(resourcesDir, "", errors);
   const entries = flatten(root);
 
   // Groups/subgroups get path-derived keys (e.g. "aiagent/tools"), but leaf
