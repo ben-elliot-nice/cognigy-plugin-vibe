@@ -7,37 +7,41 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { loadConfig } from "./config.js";
-import { CognigyApiClient } from "./api/client.js";
-import { ToolHandlers } from "./tools/handlers.js";
+import { loadServerMeta, buildSetupGuidance } from "./config.js";
 import { tools } from "./tools/definitions.js";
 import { SERVER_INSTRUCTIONS } from "./instructions.js";
 import { logger } from "./utils/logger.js";
-import { RateLimiter } from "./utils/rateLimiter.js";
+import { RuntimeManager } from "./runtime.js";
 
 async function main() {
   try {
-    const config = loadConfig();
-    logger.setLevel(config.logLevel);
-    logger.info("Starting NiCE Cognigy Plugin", {
-      name: config.serverName,
-      version: config.serverVersion,
-    });
+    const meta = loadServerMeta();
+    logger.setLevel(meta.logLevel);
 
-    const apiClient = new CognigyApiClient({
-      baseUrl: config.apiBaseUrl,
-      apiKey: config.apiKey,
-    });
-    const toolHandlers = new ToolHandlers(
-      apiClient,
-      config.endpointBaseUrl,
-      config.webchatBaseUrl,
-      config.staticFilesBaseUrl,
-    );
-    const rateLimiter = new RateLimiter(config.rateLimit);
+    const runtimeManager = new RuntimeManager();
+    const initial = runtimeManager.ensure();
+    if (initial.runtime) {
+      logger.info("Starting NiCE Cognigy Plugin", {
+        name: meta.serverName,
+        version: meta.serverVersion,
+      });
+    } else {
+      // Degraded-mode boot: no credentials yet. The server still starts and
+      // exposes the full tool list; each tool call re-checks for credentials
+      // (env var or the on-disk cognigy-setup fallback file) so running
+      // `cognigy-setup` mid-session takes effect immediately, no restart.
+      logger.warn(
+        "Starting NiCE Cognigy Plugin in degraded mode — no Cognigy credentials configured yet",
+        {
+          name: meta.serverName,
+          version: meta.serverVersion,
+          missing: initial.missing,
+        },
+      );
+    }
 
     const server = new Server(
-      { name: config.serverName, version: config.serverVersion },
+      { name: meta.serverName, version: meta.serverVersion },
       {
         capabilities: { tools: {} },
         instructions: SERVER_INSTRUCTIONS,
@@ -50,8 +54,23 @@ async function main() {
       const { name, arguments: args } = request.params;
       logger.info(`Tool call received: ${name}`);
 
-      const rateLimitKey = config.apiKey.substring(0, 10);
-      if (!rateLimiter.check(rateLimitKey)) {
+      const { runtime, missing } = runtimeManager.ensure();
+      if (!runtime) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                error: "not_configured",
+                message: buildSetupGuidance(missing),
+              }),
+            },
+          ],
+        };
+      }
+
+      const rateLimitKey = runtime.config.apiKey.substring(0, 10);
+      if (!runtime.rateLimiter.check(rateLimitKey)) {
         return {
           content: [
             {
@@ -63,7 +82,10 @@ async function main() {
       }
 
       try {
-        const result = await toolHandlers.handleToolCall(name, args || {});
+        const result = await runtime.toolHandlers.handleToolCall(
+          name,
+          args || {},
+        );
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result) }],
         };
@@ -95,7 +117,7 @@ async function main() {
 
     const shutdown = async () => {
       logger.info("Shutting down NiCE Cognigy Plugin");
-      rateLimiter.destroy();
+      runtimeManager.destroy();
       await server.close();
       process.exit(0);
     };

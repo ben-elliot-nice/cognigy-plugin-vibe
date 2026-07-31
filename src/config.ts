@@ -127,36 +127,35 @@ function parseIntWithDefault(
 }
 
 /**
- * Load configuration from environment variables
+ * Server metadata that never requires API credentials — safe to compute
+ * during a degraded (no-credentials) boot so the server name/version/log
+ * level are still correct even before `COGNIGY_API_BASE_URL`/`COGNIGY_API_KEY`
+ * are configured.
  */
-export function loadConfig(): Config {
-  // Environment variables win (terminal install stores them via userConfig /
-  // keychain). Only when one is missing do we consult the on-disk fallback
-  // written by the `cognigy-setup` CLI — this is the path GUI users take
-  // when their installer never prompted for credentials.
-  const fileConfig =
-    process.env.COGNIGY_API_BASE_URL && process.env.COGNIGY_API_KEY
-      ? {}
-      : readUserConfigFile();
+export interface ServerMeta {
+  serverName: string;
+  serverVersion: string;
+  logLevel: Config["logLevel"];
+}
 
-  const apiBaseUrl =
-    process.env.COGNIGY_API_BASE_URL || fileConfig.COGNIGY_API_BASE_URL;
-  const apiKey = process.env.COGNIGY_API_KEY || fileConfig.COGNIGY_API_KEY;
+export function loadServerMeta(): ServerMeta {
+  return {
+    serverName: process.env.MCP_SERVER_NAME || "cognigy-api-mcp",
+    serverVersion: process.env.MCP_SERVER_VERSION || PACKAGE_VERSION,
+    logLevel: (() => {
+      const raw = process.env.LOG_LEVEL || "info";
+      if (!VALID_LOG_LEVELS.has(raw)) {
+        console.error(
+          `[config] Invalid LOG_LEVEL "${raw}", falling back to "info"`,
+        );
+        return "info" as Config["logLevel"];
+      }
+      return raw as Config["logLevel"];
+    })(),
+  };
+}
 
-  if (!apiBaseUrl) {
-    throw new Error(
-      `COGNIGY_API_BASE_URL is not set. Provide it via the plugin install prompt, ` +
-        `or run "npx -y -p @cognigy/plugin-engine cognigy-setup" to write ${USER_CONFIG_FILE}.`,
-    );
-  }
-
-  if (!apiKey) {
-    throw new Error(
-      `COGNIGY_API_KEY is not set. Provide it via the plugin install prompt, ` +
-        `or run "npx -y -p @cognigy/plugin-engine cognigy-setup" to write ${USER_CONFIG_FILE}.`,
-    );
-  }
-
+function buildConfig(apiBaseUrl: string, apiKey: string): Config {
   const normalizedApiBaseUrl = normalizeApiBaseUrl(apiBaseUrl);
 
   const endpointBaseUrl =
@@ -171,24 +170,17 @@ export function loadConfig(): Config {
     process.env.COGNIGY_STATIC_FILES_BASE_URL ||
     deriveStaticFilesBaseUrl(normalizedApiBaseUrl);
 
+  const meta = loadServerMeta();
+
   return {
     apiBaseUrl: normalizedApiBaseUrl,
     endpointBaseUrl,
     webchatBaseUrl,
     staticFilesBaseUrl,
     apiKey,
-    serverName: process.env.MCP_SERVER_NAME || "cognigy-api-mcp",
-    serverVersion: process.env.MCP_SERVER_VERSION || PACKAGE_VERSION,
-    logLevel: (() => {
-      const raw = process.env.LOG_LEVEL || "info";
-      if (!VALID_LOG_LEVELS.has(raw)) {
-        console.error(
-          `[config] Invalid LOG_LEVEL "${raw}", falling back to "info"`,
-        );
-        return "info" as Config["logLevel"];
-      }
-      return raw as Config["logLevel"];
-    })(),
+    serverName: meta.serverName,
+    serverVersion: meta.serverVersion,
+    logLevel: meta.logLevel,
     rateLimit: {
       maxRequests: parseIntWithDefault(
         process.env.RATE_LIMIT_MAX_REQUESTS,
@@ -197,4 +189,93 @@ export function loadConfig(): Config {
       windowMs: parseIntWithDefault(process.env.RATE_LIMIT_WINDOW_MS, 60000),
     },
   };
+}
+
+export interface TryLoadConfigResult {
+  /** Fully-resolved config, or `null` when credentials are missing. */
+  config: Config | null;
+  /** Env var names that are still unset (checked against both env and the
+   * on-disk `cognigy-setup` fallback file). Empty when `config` is non-null. */
+  missing: string[];
+}
+
+/**
+ * Non-throwing config load. Re-reads environment variables and the on-disk
+ * `cognigy-setup` fallback file (see `userConfigFile.ts`) on every call, so
+ * callers that poll this (e.g. a degraded-mode MCP server re-checking before
+ * each tool call) pick up credentials written by a `cognigy-setup` run that
+ * happened *after* the server booted — no restart required.
+ */
+export function tryLoadConfig(): TryLoadConfigResult {
+  // Environment variables win (terminal install stores them via userConfig /
+  // keychain). Only when one is missing do we consult the on-disk fallback
+  // written by the `cognigy-setup` CLI — this is the path GUI users take
+  // when their installer never prompted for credentials.
+  const fileConfig =
+    process.env.COGNIGY_API_BASE_URL && process.env.COGNIGY_API_KEY
+      ? {}
+      : readUserConfigFile();
+
+  const apiBaseUrl =
+    process.env.COGNIGY_API_BASE_URL || fileConfig.COGNIGY_API_BASE_URL;
+  const apiKey = process.env.COGNIGY_API_KEY || fileConfig.COGNIGY_API_KEY;
+
+  const missing: string[] = [];
+  if (!apiBaseUrl) missing.push("COGNIGY_API_BASE_URL");
+  if (!apiKey) missing.push("COGNIGY_API_KEY");
+
+  if (missing.length > 0) {
+    return { config: null, missing };
+  }
+
+  return { config: buildConfig(apiBaseUrl!, apiKey!), missing: [] };
+}
+
+/**
+ * Human-readable, actionable guidance for a tool call made while the server
+ * is running in degraded mode (no credentials configured yet). Returned to
+ * the LLM/user instead of a hard error/crash.
+ */
+export function buildSetupGuidance(missing: string[]): string {
+  const missingList =
+    missing.length > 0
+      ? missing.join(", ")
+      : "COGNIGY_API_BASE_URL, COGNIGY_API_KEY";
+  return [
+    "Cognigy API credentials are not configured yet, so this tool cannot run.",
+    `Missing: ${missingList}.`,
+    "",
+    "To fix this, either:",
+    "  1. Run: npx -y -p @cognigy/plugin-engine cognigy-setup",
+    `     (writes credentials to ${USER_CONFIG_FILE})`,
+    "  2. Set the COGNIGY_API_BASE_URL and COGNIGY_API_KEY environment variables",
+    "     for this MCP server process.",
+    "",
+    "No restart is needed after running cognigy-setup — the next tool call will",
+    "pick up the new credentials automatically.",
+  ].join("\n");
+}
+
+/**
+ * Load configuration from environment variables. Throws when credentials are
+ * missing — use `tryLoadConfig()` for a non-throwing variant (e.g. to boot in
+ * degraded mode without credentials).
+ */
+export function loadConfig(): Config {
+  const { config, missing } = tryLoadConfig();
+
+  if (!config) {
+    if (missing.includes("COGNIGY_API_BASE_URL")) {
+      throw new Error(
+        `COGNIGY_API_BASE_URL is not set. Provide it via the plugin install prompt, ` +
+          `or run "npx -y -p @cognigy/plugin-engine cognigy-setup" to write ${USER_CONFIG_FILE}.`,
+      );
+    }
+    throw new Error(
+      `COGNIGY_API_KEY is not set. Provide it via the plugin install prompt, ` +
+        `or run "npx -y -p @cognigy/plugin-engine cognigy-setup" to write ${USER_CONFIG_FILE}.`,
+    );
+  }
+
+  return config;
 }
