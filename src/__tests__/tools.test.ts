@@ -740,6 +740,20 @@ describe("ToolHandlers v2", () => {
       expect(result.items[0].name).toBe("My Project");
     });
 
+    it("accepts the plural resourceType 'flows' as an alias for 'flow' (migration item #10)", async () => {
+      api.get.mockResolvedValue({
+        items: [{ _id: ID.flow, name: "My Flow" }],
+        total: 1,
+      });
+
+      const result = await h.handleToolCall("list_resources", {
+        resourceType: "flows",
+        projectId: ID.project,
+      });
+      expect(result.items).toHaveLength(1);
+      expect(result.error).toBeUndefined();
+    });
+
     it("returns error when projectId missing for non-project type", async () => {
       const result = await h.handleToolCall("list_resources", {
         resourceType: "agent",
@@ -903,6 +917,18 @@ describe("ToolHandlers v2", () => {
 
       expect(result.name).toBe("Agent");
       expect(result.secret).toBeUndefined();
+    });
+
+    it("accepts the plural resourceType 'flows' as an alias for 'flow' (migration item #10)", async () => {
+      api.get.mockResolvedValue({ _id: ID.flow, name: "My Flow" });
+
+      const result = await h.handleToolCall("get_resource", {
+        resourceType: "flows",
+        id: ID.flow,
+      });
+
+      expect(api.get).toHaveBeenCalledWith(`/v2.0/flows/${ID.flow}`);
+      expect(result.name).toBe("My Flow");
     });
 
     it("returns raw response when raw: true", async () => {
@@ -1794,6 +1820,98 @@ describe("ToolHandlers v2", () => {
       expect(patchBody.config).not.toHaveProperty("transpiled");
       expect(patchBody.config).not.toHaveProperty("hasError");
       expect(patchBody.config.code).toBe("input.ok = 1;");
+    });
+  });
+
+  // =========================================================================
+  // manage_flow_nodes — write normalisation (migration item #10)
+  // =========================================================================
+  describe("manage_flow_nodes — write normalisation", () => {
+    it("create: lifts a bare config.text on a say node into config.say.text", async () => {
+      api.post.mockResolvedValueOnce({
+        _id: "60d5ec49f1a2c8b1a4e0f00e",
+        parentId: ID.entry,
+      });
+
+      await h.handleToolCall("manage_flow_nodes", {
+        operation: "create",
+        flowId: ID.flow,
+        parentNodeId: ID.entry,
+        mode: "append",
+        nodeType: "say",
+        label: "Greeting",
+        config: { text: "Hello there" },
+      });
+
+      const postBody = api.post.mock.calls[0][1] as any;
+      expect(postBody.config.text).toBeUndefined();
+      expect(postBody.config.say.text).toEqual(["Hello there"]);
+      // aiAgentJob preview safety is untouched — extension is still injected
+      // from the node registry for a say node.
+      expect(postBody.extension).toBe("@cognigy/basic-nodes");
+    });
+
+    it("update: lifts a bare config.text on an existing say node into config.say.text", async () => {
+      const sayNodeId = "60d5ec49f1a2c8b1a4e0f00f";
+      api.get.mockResolvedValueOnce({
+        _id: sayNodeId,
+        type: "say",
+        config: { say: { type: "text", text: ["Old text"] } },
+      });
+      api.patch.mockResolvedValueOnce({ _id: sayNodeId });
+
+      await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: sayNodeId,
+        config: { text: "New text" },
+      });
+
+      const patchBody = api.patch.mock.calls[0][1] as any;
+      expect(patchBody.config.say.text).toEqual(["New text"]);
+    });
+
+    it("update: injects the canonical answer when an aiAgentToolAnswer config is left empty", async () => {
+      const answerNodeId = "60d5ec49f1a2c8b1a4e0f010";
+      api.get.mockResolvedValueOnce({
+        _id: answerNodeId,
+        type: "aiAgentToolAnswer",
+        config: {},
+      });
+      api.patch.mockResolvedValueOnce({ _id: answerNodeId });
+
+      await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: answerNodeId,
+        config: {},
+      });
+
+      const patchBody = api.patch.mock.calls[0][1] as any;
+      expect(patchBody.config.answer).toBe(
+        "{{JSON.stringify(context.toolResponse)}}",
+      );
+    });
+
+    it("update: does not clobber an existing aiAgentToolAnswer answer expression", async () => {
+      const answerNodeId = "60d5ec49f1a2c8b1a4e0f011";
+      api.get.mockResolvedValueOnce({
+        _id: answerNodeId,
+        type: "aiAgentToolAnswer",
+        config: { answer: "{{JSON.stringify(input.result)}}", maxLoops: 4 },
+      });
+      api.patch.mockResolvedValueOnce({ _id: answerNodeId });
+
+      await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: answerNodeId,
+        config: { maxLoops: 6 },
+      });
+
+      const patchBody = api.patch.mock.calls[0][1] as any;
+      expect(patchBody.config.answer).toBe("{{JSON.stringify(input.result)}}");
+      expect(patchBody.config.maxLoops).toBe(6);
     });
   });
 
