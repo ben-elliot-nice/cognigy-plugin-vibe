@@ -19,6 +19,12 @@ export interface Config {
     maxRequests: number;
     windowMs: number;
   };
+  /**
+   * Opt-in persistent read cache + name->id resolution (migration-docs item
+   * #4). Off by default: existing installs get today's always-fresh
+   * behavior unchanged unless COGNIGY_CACHE_ENABLED=true is set.
+   */
+  cacheEnabled: boolean;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -196,5 +202,6 @@ export function loadConfig(): Config {
       ),
       windowMs: parseIntWithDefault(process.env.RATE_LIMIT_WINDOW_MS, 60000),
     },
+    cacheEnabled: process.env.COGNIGY_CACHE_ENABLED === "true",
   };
 }

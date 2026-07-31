@@ -14,6 +14,9 @@ import { tools } from "./tools/definitions.js";
 import { SERVER_INSTRUCTIONS } from "./instructions.js";
 import { logger } from "./utils/logger.js";
 import { RateLimiter } from "./utils/rateLimiter.js";
+import { CacheStore, projectKeyFromApiBaseUrl } from "./cache/cacheStore.js";
+import { USER_CONFIG_DIR } from "./userConfigFile.js";
+import { join } from "path";
 
 async function main() {
   try {
@@ -28,11 +31,22 @@ async function main() {
       baseUrl: config.apiBaseUrl,
       apiKey: config.apiKey,
     });
+    // Opt-in persistent read cache + name->id resolution (migration-docs
+    // item #4), scoped per API base URL so multiple Cognigy
+    // projects/orgs on one machine don't share (or invalidate) each
+    // other's cache.
+    const cacheStore = config.cacheEnabled
+      ? new CacheStore({
+          baseDir: join(USER_CONFIG_DIR, "cache"),
+          projectKey: projectKeyFromApiBaseUrl(config.apiBaseUrl),
+        })
+      : undefined;
     const toolHandlers = new ToolHandlers(
       apiClient,
       config.endpointBaseUrl,
       config.webchatBaseUrl,
       config.staticFilesBaseUrl,
+      cacheStore,
     );
     const rateLimiter = new RateLimiter(config.rateLimit);
 
