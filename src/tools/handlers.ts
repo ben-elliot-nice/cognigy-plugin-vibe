@@ -38,6 +38,24 @@ import {
   chartToHtml,
   chartLegend,
 } from "../render/flowRender.js";
+import {
+  getOpenApiSpec,
+  getChartDescriptors,
+  normaliseResourceType,
+  findCandidatePath,
+  knownResourceTypes,
+  operationMethod,
+  availableMethods,
+  mergePathItemParameters,
+  withResolvedSchema,
+  rawSchemaFragment,
+  extractFields,
+  isComposedSchema,
+  findNodeDescriptor,
+  knownNodeTypes,
+  simplifyDescriptorFields,
+  type SchemaOperation,
+} from "./schemaIntrospection.js";
 
 // The self-contained mermaid UMD build, inlined into rich flow-viz HTML so it
 // renders offline. Copied to dist/assets at build time (scripts/copy-assets.mjs);
@@ -4796,6 +4814,136 @@ export class ToolHandlers {
   }
 
   // =========================================================================
+  // Tool 17: describe_resource_schema
+  // =========================================================================
+  async handleDescribeResourceSchema(args: any): Promise<any> {
+    const data = schemas.describeResourceSchemaSchema.parse(args);
+
+    if (data.nodeType !== undefined) {
+      return this.describeNodeTypeSchema(
+        data.nodeType,
+        data.flowId!,
+        !!data.verbose,
+      );
+    }
+
+    const operation = data.operation as SchemaOperation;
+    const spec = await getOpenApiSpec(this.apiClient);
+
+    const paths = spec?.paths ?? {};
+    const rtype = normaliseResourceType(data.resourceType);
+    const { path, exact } = findCandidatePath(paths, rtype, operation);
+
+    if (path === null) {
+      return {
+        error: `No OpenAPI path found for resourceType=${JSON.stringify(data.resourceType)}`,
+        known_resource_types: knownResourceTypes(paths),
+      };
+    }
+
+    const method = operationMethod(operation);
+    const pathItem = paths[path];
+    const methods = availableMethods(pathItem);
+
+    if (!methods.includes(method)) {
+      const errorResponse: any = {
+        error: `operation=${JSON.stringify(operation)} (HTTP ${method.toUpperCase()}) not available at ${path}`,
+        available_methods: methods,
+      };
+      if (!exact) {
+        errorResponse.warning = `No exact match for resourceType=${JSON.stringify(data.resourceType)}; best guess via substring search: ${path}`;
+      }
+      return errorResponse;
+    }
+
+    let op = pathItem[method];
+    if (operation === "list") {
+      op = { ...op, parameters: mergePathItemParameters(pathItem, op) };
+    } else if (
+      operation === "create" ||
+      operation === "update" ||
+      operation === "get"
+    ) {
+      op = withResolvedSchema(op, operation, spec);
+    }
+
+    const result: any = {
+      resource_type: rtype,
+      operation,
+      path,
+      method,
+    };
+    if (!exact) {
+      result.warning = `No exact match for resourceType=${JSON.stringify(data.resourceType)}; best guess via substring search: ${path}`;
+    }
+
+    if (data.verbose) {
+      result.raw_schema = rawSchemaFragment(op, operation);
+    } else {
+      result.fields = extractFields(op, operation);
+      if (
+        (operation === "create" ||
+          operation === "update" ||
+          operation === "get") &&
+        result.fields.length === 0
+      ) {
+        const schemaFragment = rawSchemaFragment(op, operation);
+        if (isComposedSchema(schemaFragment)) {
+          const schemaKind = operation === "get" ? "response" : "request body";
+          result.note =
+            `This resource's ${schemaKind} schema uses $ref/oneOf/allOf/anyOf composition rather than a flat ` +
+            "'properties' object, so it could not be flattened into a field list. Call again with " +
+            "verbose: true to see the raw schema fragment.";
+        }
+      }
+    }
+
+    return result;
+  }
+
+  private async describeNodeTypeSchema(
+    nodeType: string,
+    flowId: string,
+    verbose: boolean,
+  ): Promise<any> {
+    const { descriptors, nextCursor } = await getChartDescriptors(
+      this.apiClient,
+      flowId,
+    );
+
+    const descriptor = findNodeDescriptor(descriptors, nodeType);
+    if (!descriptor) {
+      return {
+        error: `No node descriptor found for nodeType=${JSON.stringify(nodeType)}`,
+        known_node_types: knownNodeTypes(descriptors),
+      };
+    }
+
+    const result: any = {
+      resource_type: "node",
+      node_type: nodeType,
+      flow_id: flowId,
+    };
+    // This endpoint takes no query parameters and its documented response
+    // schema declares only 'items' — no cursor/limit to page through, so a
+    // non-null nextCursor here would mean the live API added pagination this
+    // tool does not yet follow. Surface that as a warning rather than
+    // silently returning a partial catalog.
+    if (nextCursor) {
+      result.warning =
+        "API response included a non-null nextCursor, which this tool does not yet follow — the node-type catalog below may be incomplete.";
+    }
+
+    const rawFields = Array.isArray(descriptor.fields) ? descriptor.fields : [];
+    if (verbose) {
+      result.raw_fields = rawFields;
+    } else {
+      result.fields = simplifyDescriptorFields(rawFields);
+    }
+    return result;
+  }
+
+  // =========================================================================
   // Main dispatcher
   // =========================================================================
   async handleToolCall(toolName: string, args: any): Promise<any> {
@@ -4853,6 +5001,9 @@ export class ToolHandlers {
           break;
         case "audit_voice_agent":
           result = await this.handleAuditVoiceAgent(args);
+          break;
+        case "describe_resource_schema":
+          result = await this.handleDescribeResourceSchema(args);
           break;
         default:
           throw new Error(`Unknown tool: ${toolName}`);

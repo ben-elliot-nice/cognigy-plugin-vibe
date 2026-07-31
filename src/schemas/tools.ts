@@ -645,3 +645,21 @@ export const auditVoiceAgentSchema = z
     message: "Either aiAgentId or flowId must be provided",
     path: ["aiAgentId"],
   });
+
+// Tool 17: describe_resource_schema
+export const describeResourceSchemaSchema = z
+  .object({
+    resourceType: z.string().min(1),
+    operation: z.enum(["create", "update", "get", "list", "delete"]).optional(),
+    nodeType: z.string().optional(),
+    flowId: idSchema.optional(),
+    verbose: z.boolean().optional(),
+  })
+  .refine((d) => d.nodeType === undefined || d.flowId !== undefined, {
+    message: "flowId is required when nodeType is set",
+    path: ["flowId"],
+  })
+  .refine((d) => d.nodeType !== undefined || d.operation !== undefined, {
+    message: "operation is required unless nodeType is set",
+    path: ["operation"],
+  });

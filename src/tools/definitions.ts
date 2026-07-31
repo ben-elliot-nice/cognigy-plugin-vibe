@@ -1708,4 +1708,50 @@ After creating, use talk_to_agent to test.`,
       },
     },
   },
+
+  // 17. describe_resource_schema
+  {
+    name: "describe_resource_schema",
+    description:
+      "Look up the field-level shape for a Cognigy resourceType + operation (create/update/get/list/delete), derived from the LIVE OpenAPI spec (cached in-memory ~24h). Use this before guessing a body for a create/update call against an unfamiliar resourceType — cheaper than trial-and-error against live API 400s, and always reflects the current platform (unlike a hardcoded registry).\n\nresourceType accepts either the raw OpenAPI path segment (e.g. 'flows', 'lexicons', 'aiagents') or a common singular/alias form (e.g. 'flow', 'agent', 'lexicon', 'knowledge-store') which is normalized automatically. If no exact path match is found, a best-guess substring match is returned with a warning; if nothing matches at all, the response lists known_resource_types from the live spec instead.\n\nFor resourceType='node', the OpenAPI spec only covers the generic node envelope (type/mode/target/label/etc.) — a node's 'config' shape is node-type-specific and lives in the live node-descriptor catalog instead. Pass nodeType (e.g. 'say', 'aiAgentJob', or a 3rd-party extension node type) plus flowId to fetch that node type's live config field schema (GET /v2.0/flows/{flowId}/chart/descriptors, also cached ~24h) instead of the generic envelope. Any flowId in the project works — the descriptor catalog is project-wide.\n\nBy default (verbose: false) the response has a simplified 'fields' list ({field, type, required, enum, example, description}). Pass verbose: true to get the raw OpenAPI schema fragment (or raw descriptor fields for a nodeType lookup) instead — useful when the schema uses $ref/oneOf/allOf/anyOf composition that couldn't be flattened.",
+    annotations: {
+      title: "Describe Resource Schema",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        resourceType: {
+          type: "string",
+          description:
+            "e.g. flows, lexicons, endpoints, connections, agent, node",
+        },
+        operation: {
+          type: "string",
+          enum: ["create", "update", "get", "list", "delete"],
+          description:
+            "Required unless nodeType is set — a nodeType lookup returns a config field schema directly, not a CRUD operation's schema.",
+        },
+        nodeType: {
+          type: "string",
+          description:
+            "When resourceType='node', pass the node's type (e.g. 'say', 'aiAgentJob') to fetch its live config field schema from GET /v2.0/flows/{flowId}/chart/descriptors. Requires flowId.",
+        },
+        flowId: {
+          type: "string",
+          description:
+            "Required when nodeType is set. 24-char hex flow ID — any flow in the project works, since chart/descriptors returns the project-wide node-type catalog, not per-flow data.",
+        },
+        verbose: {
+          type: "boolean",
+          description:
+            "When true, return the raw OpenAPI schema fragment (or raw descriptor fields, for nodeType lookups) instead of a simplified field list. Default false.",
+        },
+      },
+      required: ["resourceType"],
+    },
+  },
 ];

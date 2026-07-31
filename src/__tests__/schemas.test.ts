@@ -751,3 +751,74 @@ describe("auditVoiceAgentSchema", () => {
     ).toThrow();
   });
 });
+
+describe("describeResourceSchemaSchema", () => {
+  it("accepts resourceType + operation", () => {
+    expect(() =>
+      schemas.describeResourceSchemaSchema.parse({
+        resourceType: "lexicons",
+        operation: "create",
+      }),
+    ).not.toThrow();
+  });
+
+  it("accepts nodeType + flowId without operation", () => {
+    expect(() =>
+      schemas.describeResourceSchemaSchema.parse({
+        resourceType: "node",
+        nodeType: "say",
+        flowId: VALID_ID,
+      }),
+    ).not.toThrow();
+  });
+
+  it("accepts verbose flag", () => {
+    expect(() =>
+      schemas.describeResourceSchemaSchema.parse({
+        resourceType: "lexicons",
+        operation: "get",
+        verbose: true,
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects when neither operation nor nodeType is provided", () => {
+    expect(() =>
+      schemas.describeResourceSchemaSchema.parse({ resourceType: "node" }),
+    ).toThrow();
+  });
+
+  it("rejects nodeType without flowId", () => {
+    expect(() =>
+      schemas.describeResourceSchemaSchema.parse({
+        resourceType: "node",
+        nodeType: "say",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects an invalid operation value", () => {
+    expect(() =>
+      schemas.describeResourceSchemaSchema.parse({
+        resourceType: "lexicons",
+        operation: "nonexistent",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a missing resourceType", () => {
+    expect(() =>
+      schemas.describeResourceSchemaSchema.parse({ operation: "create" }),
+    ).toThrow();
+  });
+
+  it("rejects an invalid flowId", () => {
+    expect(() =>
+      schemas.describeResourceSchemaSchema.parse({
+        resourceType: "node",
+        nodeType: "say",
+        flowId: "nope",
+      }),
+    ).toThrow();
+  });
+});
