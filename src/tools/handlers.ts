@@ -25,6 +25,11 @@ import {
 import { buildWebchatSettings, deepMerge } from "./webchatSettings.js";
 import { getNodeEntry, supportedNodeTypes } from "./nodeRegistry.js";
 import {
+  validatePngDimensions,
+  guessKnowledgeContentType,
+  buildKnowledgeUploadForm,
+} from "./assets.js";
+import {
   evaluateChecks,
   summarize,
   nodeId as voiceNodeId,
@@ -1512,6 +1517,36 @@ export class ToolHandlers {
 
     const updatedParts: string[] = [];
 
+    // Step 0: Validate + encode the avatar image (if provided) BEFORE any
+    // upload is attempted. Must be a real PNG at exactly 136x184px.
+    let avatarDataUri: string | undefined;
+    if (rest.avatarImagePath !== undefined) {
+      const resolvedPath = rest.avatarImagePath.startsWith("~")
+        ? rest.avatarImagePath.replace(/^~/, process.env.HOME || "")
+        : rest.avatarImagePath;
+
+      if (!existsSync(resolvedPath)) {
+        return withHints(
+          { error: `File not found: ${resolvedPath}` },
+          { action: "Provide an absolute path to a local 136x184px PNG file." },
+        );
+      }
+
+      const imageBuffer = readFileSync(resolvedPath);
+      const validation = validatePngDimensions(imageBuffer);
+      if (!validation.ok) {
+        return withHints(
+          { error: `Invalid avatar image: ${validation.error}` },
+          {
+            action:
+              "Resize the image to exactly 136x184px PNG and retry update_ai_agent with avatarImagePath.",
+          },
+        );
+      }
+
+      avatarDataUri = `data:image/png;base64,${imageBuffer.toString("base64")}`;
+    }
+
     // Step 1: Patch AI Agent resource if any agent-level fields provided
     const agentPayload: Record<string, any> = {};
     if (rest.name !== undefined) agentPayload.name = rest.name;
@@ -1519,6 +1554,10 @@ export class ToolHandlers {
       agentPayload.description = rest.description;
     if (rest.instructions !== undefined)
       agentPayload.instructions = rest.instructions;
+    if (avatarDataUri !== undefined) {
+      agentPayload.image = avatarDataUri;
+      agentPayload.imageOptimizedFormat = true;
+    }
 
     let agentResult: any;
     if (Object.keys(agentPayload).length > 0) {
@@ -1531,8 +1570,14 @@ export class ToolHandlers {
 
     // Step 2: Patch AI Agent Job Node config if any job-level fields provided
     const needsJobPatch = jobConfig && Object.keys(jobConfig).length > 0;
+    // The node's avatar preview is computed server-side from `config.aiAgent`
+    // at patch time — a name, job-name, or avatar-image change all require
+    // re-sending `aiAgent` to force the backend to regenerate the preview
+    // (see chart gotchas: omitting it wipes the avatar).
     const needsPreviewPatch =
-      rest.name !== undefined || jobConfig?.jobName !== undefined;
+      rest.name !== undefined ||
+      jobConfig?.jobName !== undefined ||
+      avatarDataUri !== undefined;
 
     let jobNodeResult: any;
     if (needsJobPatch || needsPreviewPatch) {
@@ -2540,10 +2585,19 @@ export class ToolHandlers {
             throw new Error(`File is empty: ${fileName}`);
           }
 
-          const result: any = await this.apiClient.uploadFile(
-            `/v2.0/knowledgestores/${storeId}/sources/upload`,
+          // Real multipart/form-data upload (via the `form-data` dep) — this
+          // endpoint requires an actual file part, which a JSON-only invoke
+          // path cannot carry.
+          const contentType = guessKnowledgeContentType(fileName);
+          const form = buildKnowledgeUploadForm({
             fileBuffer,
             fileName,
+            contentType,
+            tags: data.tags,
+          });
+          const result: any = await this.apiClient.postForm(
+            `/v2.0/knowledgestores/${storeId}/sources/upload`,
+            form,
           );
 
           return withHints(

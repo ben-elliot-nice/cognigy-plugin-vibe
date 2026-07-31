@@ -80,6 +80,11 @@ export const tools: ToolDefinition[] = [
           description:
             "Agent GUARDRAILS — high-level constraints and policies that apply regardless of the job (up to 1000 chars). Example: 'Never share internal pricing. Always verify identity before account changes.'",
         },
+        avatarImagePath: {
+          type: "string",
+          description:
+            "Absolute path to a local PNG file to use as the agent's avatar. Must be exactly 136x184px — validated locally before upload, so a wrong-size or non-PNG file is rejected with a clear error instead of being sent to the API. Encoded as a base64 data URI and PATCHed onto the agent resource.",
+        },
         jobConfig: {
           type: "object",
           description:
@@ -417,7 +422,7 @@ export const tools: ToolDefinition[] = [
   {
     name: "manage_knowledge",
     description:
-      "Manage knowledge bases for RAG. Create stores, add sources (URLs, text, or files), and list chunks to verify content.\n\nPREREQUISITES:\n- An embedding-capable model must be configured in the project before creating or using knowledge stores.\n- For normal AI-agent knowledge-store setups, configure Knowledge AI settings with manage_settings { operation: 'set_knowledge_ai', ... } before creating the store.\n- knowledgeSearchModelId must be an llm_model referenceId from the SAME project.\n- If you are reusing another project's knowledge workflow, import the exact source-project Knowledge Search model into the target project before guessing with a different model.\n\nFor URL sources: provide type 'url' and url field — the page is scraped and ingested automatically.\nFor text sources: provide text field (type defaults to 'manual') — a source and chunk are created.\nFor file sources (PDF, TXT, DOCX, CTXT, PPTX): provide type 'file' with filePath pointing to a local file. The server reads the file from disk and uploads it. Ingestion is async.\nTo verify content: use list_chunks with knowledgeStoreId (and optionally sourceId, filter).\n\nTo list stores: use list_resources { resourceType: 'knowledge_store' }.\nTo delete: use delete_resource { resourceType: 'knowledge_store', id }.\nAvoid repeated list_resources scans for the same unchanged project — reuse previous llm_model results unless imports or setup changed the state.",
+      "Manage knowledge bases for RAG. Create stores, add sources (URLs, text, or files), and list chunks to verify content.\n\nPREREQUISITES:\n- An embedding-capable model must be configured in the project before creating or using knowledge stores.\n- For normal AI-agent knowledge-store setups, configure Knowledge AI settings with manage_settings { operation: 'set_knowledge_ai', ... } before creating the store.\n- knowledgeSearchModelId must be an llm_model referenceId from the SAME project.\n- If you are reusing another project's knowledge workflow, import the exact source-project Knowledge Search model into the target project before guessing with a different model.\n\nFor URL sources: provide type 'url' and url field — the page is scraped and ingested automatically.\nFor text sources: provide text field (type defaults to 'manual') — a source and chunk are created.\nFor file sources (PDF, TXT, DOCX, CTXT, PPTX): provide type 'file' with filePath pointing to a local file. The server reads the file from disk and performs a real multipart/form-data upload (not a JSON-only invoke, which cannot carry binary file content). Optional tags may be attached. Ingestion is async.\nTo verify content: use list_chunks with knowledgeStoreId (and optionally sourceId, filter).\n\nTo list stores: use list_resources { resourceType: 'knowledge_store' }.\nTo delete: use delete_resource { resourceType: 'knowledge_store', id }.\nAvoid repeated list_resources scans for the same unchanged project — reuse previous llm_model results unless imports or setup changed the state.",
     annotations: {
       title: "Manage Knowledge",
       readOnlyHint: false,
@@ -480,7 +485,13 @@ export const tools: ToolDefinition[] = [
         filePath: {
           type: "string",
           description:
-            "Absolute path to a local file to upload (required when type is file). Supported formats: PDF, TXT, DOCX, CTXT, PPTX. Max 10MB. Example: '/Users/me/docs/report.pdf'.",
+            "Absolute path to a local file to upload (required when type is file). Supported formats: PDF, TXT, DOCX, CTXT, PPTX. Max 10MB. Example: '/Users/me/docs/report.pdf'. Uploaded as a real multipart/form-data request.",
+        },
+        tags: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Optional tags applied to the created Knowledge Source (type file only). Tags must not contain commas or be empty/whitespace-only.",
         },
         filter: {
           type: "string",

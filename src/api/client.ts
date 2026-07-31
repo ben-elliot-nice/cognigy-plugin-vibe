@@ -178,6 +178,20 @@ export class CognigyApiClient {
         form.append(key, value);
       }
     }
+    return this.postForm<T>(url, form, options);
+  }
+
+  /**
+   * POST a pre-built multipart/form-data FormData instance (e.g. from
+   * `buildKnowledgeUploadForm` in src/tools/assets.ts). Use this when the
+   * caller needs full control over per-part options (filename, contentType)
+   * that `uploadFile`'s single-file convenience wrapper does not expose.
+   */
+  async postForm<T = any>(
+    url: string,
+    form: FormData,
+    options?: { timeoutMs?: number },
+  ): Promise<T> {
     const response: AxiosResponse<T> = await this.client.post(url, form, {
       headers: {
         ...form.getHeaders(),
