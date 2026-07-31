@@ -1035,6 +1035,80 @@ describe("ToolHandlers v2", () => {
         expect(result.deleted).toBe(true);
       }
     });
+
+    it("accepts the plural resourceType 'tools' as an alias for 'tool' and still hits the cascade branch (migration item #10)", async () => {
+      api.get.mockResolvedValue({ flowId: ID.flow });
+      api.delete.mockResolvedValue({});
+
+      const result = await h.handleToolCall("delete_resource", {
+        resourceType: "tools",
+        id: ID.node,
+        aiAgentId: ID.agent,
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.deleted).toBe(true);
+      expect(result.resourceType).toBe("tool");
+      expect(api.delete).toHaveBeenCalledWith(
+        `/v2.0/flows/${ID.flow}/chart/nodes/${ID.node}`,
+      );
+    });
+
+    it("accepts the plural resourceType 'llm_models' as an alias for 'llm_model' (migration item #10)", async () => {
+      api.delete.mockResolvedValue({});
+
+      const result = await h.handleToolCall("delete_resource", {
+        resourceType: "llm_models",
+        id: ID.llm,
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.deleted).toBe(true);
+      expect(result.resourceType).toBe("llm_model");
+      expect(api.delete).toHaveBeenCalledWith(
+        `/v2.0/largelanguagemodels/${ID.llm}`,
+      );
+    });
+
+    it("accepts a mixed-case resourceType (e.g. 'Flow') across list/get/delete (migration item #10)", async () => {
+      api.get.mockResolvedValueOnce({
+        items: [{ _id: ID.flow, name: "My Flow" }],
+        total: 1,
+      });
+      const listResult = await h.handleToolCall("list_resources", {
+        resourceType: "Flow",
+        projectId: ID.project,
+      });
+      expect(listResult.error).toBeUndefined();
+      expect(listResult.items).toHaveLength(1);
+
+      api.get.mockResolvedValueOnce({ _id: ID.flow, name: "My Flow" });
+      const getResult = await h.handleToolCall("get_resource", {
+        resourceType: "FLOW",
+        id: ID.flow,
+      });
+      expect(getResult.error).toBeUndefined();
+      expect(api.get).toHaveBeenLastCalledWith(`/v2.0/flows/${ID.flow}`);
+
+      api.delete.mockResolvedValueOnce({});
+      const deleteResult = await h.handleToolCall("delete_resource", {
+        resourceType: "Flow",
+        id: ID.flow,
+      });
+      expect(deleteResult.error).toBeUndefined();
+      expect(deleteResult.deleted).toBe(true);
+      expect(api.delete).toHaveBeenLastCalledWith(`/v2.0/flows/${ID.flow}`);
+    });
+
+    it("leaves a genuinely unknown resourceType untouched and lets schema validation reject it", async () => {
+      await expect(
+        h.handleToolCall("delete_resource", {
+          resourceType: "widget",
+          id: ID.flow,
+        }),
+      ).rejects.toThrow();
+      expect(api.delete).not.toHaveBeenCalled();
+    });
   });
 
   // =========================================================================
@@ -1912,6 +1986,118 @@ describe("ToolHandlers v2", () => {
       const patchBody = api.patch.mock.calls[0][1] as any;
       expect(patchBody.config.answer).toBe("{{JSON.stringify(input.result)}}");
       expect(patchBody.config.maxLoops).toBe(6);
+    });
+
+    it("update: is a no-op (no double-wrap) when a say node already has a well-formed config.say.text", async () => {
+      const sayNodeId = "60d5ec49f1a2c8b1a4e0f012";
+      api.get.mockResolvedValueOnce({
+        _id: sayNodeId,
+        type: "say",
+        config: {
+          say: {
+            type: "text",
+            text: ["Existing text"],
+            data: "",
+            linear: false,
+            loop: false,
+            _cognigy: {},
+          },
+        },
+      });
+      api.patch.mockResolvedValueOnce({ _id: sayNodeId });
+
+      await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: sayNodeId,
+        config: {
+          say: {
+            type: "text",
+            text: ["Existing text"],
+            data: "",
+            linear: false,
+            loop: false,
+            _cognigy: {},
+          },
+        },
+      });
+
+      const patchBody = api.patch.mock.calls[0][1] as any;
+      // Not double-wrapped: config.say.say must not exist, and the text array
+      // is the same single-level array it started as.
+      expect(patchBody.config.say.say).toBeUndefined();
+      expect(patchBody.config.say.text).toEqual(["Existing text"]);
+      expect(patchBody.config.say.type).toBe("text");
+    });
+
+    it("update: normalizeSayConfig is a no-op when a say node has neither text nor say (transformConfigForApi still owns the say envelope)", async () => {
+      const sayNodeId = "60d5ec49f1a2c8b1a4e0f013";
+      api.get.mockResolvedValueOnce({
+        _id: sayNodeId,
+        type: "say",
+        config: { alternateChannel: "voice" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: sayNodeId });
+
+      await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: sayNodeId,
+        config: { alternateChannel: "voice" },
+      });
+
+      const patchBody = api.patch.mock.calls[0][1] as any;
+      // normalizeSayConfig short-circuits (no `text` key to lift) and hands the
+      // config through unchanged; transformConfigForApi's own (pre-existing,
+      // unrelated to this PR) `say` case then always wraps a say-node config
+      // into the say envelope, even with an empty text array. Non-say fields
+      // survive the round-trip either way.
+      expect(patchBody.config.say.text).toEqual([]);
+      expect(patchBody.config.alternateChannel).toBe("voice");
+    });
+
+    it("update: does not treat an explicit empty-string aiAgentToolAnswer answer as missing (current semantics)", async () => {
+      const answerNodeId = "60d5ec49f1a2c8b1a4e0f014";
+      api.get.mockResolvedValueOnce({
+        _id: answerNodeId,
+        type: "aiAgentToolAnswer",
+        config: { answer: "" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: answerNodeId });
+
+      await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: answerNodeId,
+        config: {},
+      });
+
+      const patchBody = api.patch.mock.calls[0][1] as any;
+      // ensureToolAnswer treats any `answer !== undefined` as genuine, so an
+      // explicit empty string is preserved rather than replaced with the
+      // canonical expression — documenting the current (intentional) semantics.
+      expect(patchBody.config.answer).toBe("");
+    });
+
+    it("update: leaves aiAgentJob config.aiAgent untouched (preview safety unaffected by write normalisation)", async () => {
+      const jobNodeId = "60d5ec49f1a2c8b1a4e0f015";
+      api.get.mockResolvedValueOnce({
+        _id: jobNodeId,
+        type: "aiAgentJob",
+        config: { aiAgent: "ref-uuid" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: jobNodeId });
+
+      await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: jobNodeId,
+        config: { aiAgent: "ref-uuid", temperature: 0.7 },
+      });
+
+      const patchBody = api.patch.mock.calls[0][1] as any;
+      expect(patchBody.config.aiAgent).toBe("ref-uuid");
+      expect(patchBody.config.temperature).toBe(0.7);
     });
   });
 
