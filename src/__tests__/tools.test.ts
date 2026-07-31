@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { randomUUID } from "crypto";
 import { Readable } from "stream";
 import { CognigyApiClient } from "../api/client.js";
 import { ToolHandlers } from "../tools/handlers.js";
@@ -42,6 +43,12 @@ describe("ToolHandlers v2", () => {
       "https://endpoint-trial.cognigy.ai",
       "",
       "https://static-trial.cognigy.ai",
+      // Isolated per-test snapshot store — never touch a real machine's
+      // ~/.cognigy-plugin (see writeConflict.test.ts for dedicated coverage).
+      join(
+        mkdtempSync(join(tmpdir(), "cognigy-snap-")),
+        `${randomUUID()}.json`,
+      ),
     );
   });
 
@@ -1794,6 +1801,143 @@ describe("ToolHandlers v2", () => {
       expect(patchBody.config).not.toHaveProperty("transpiled");
       expect(patchBody.config).not.toHaveProperty("hasError");
       expect(patchBody.config.code).toBe("input.ok = 1;");
+    });
+  });
+
+  // =========================================================================
+  // manage_flow_nodes — write-conflict detection (code node)
+  // =========================================================================
+  describe("manage_flow_nodes — write-conflict detection", () => {
+    const codeNodeId = "60d5ec49f1a2c8b1a4e0f013";
+
+    it("first write for a node proceeds (no snapshot yet) and stores one", async () => {
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "api.say('hello');" },
+      });
+
+      expect(result.updated).toBe(true);
+      expect(result.conflict).toBeUndefined();
+      expect(api.patch).toHaveBeenCalledTimes(1);
+    });
+
+    it("proceeds and refreshes the snapshot when the remote is unchanged since the last push", async () => {
+      // Push #1 — establishes the snapshot.
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+      await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "v1" },
+      });
+
+      // Push #2 — remote still reports exactly what push #1 wrote (no UI edit).
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "v1" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "v2" },
+      });
+
+      expect(result.updated).toBe(true);
+      expect(result.conflict).toBeUndefined();
+      expect(api.patch).toHaveBeenCalledTimes(2);
+    });
+
+    it("blocks the write with a diff when the remote drifted from the last-pushed snapshot", async () => {
+      // Push #1 — establishes the snapshot at "v1".
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+      await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "v1" },
+      });
+
+      // Someone edited the node in the Cognigy UI — remote no longer matches
+      // the "v1" snapshot.
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "edited in the UI" },
+      });
+      api.patch.mockClear();
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "v2 from agent" },
+      });
+
+      expect(result.conflict).toBe(true);
+      expect(result.diff).toContain("edited in the UI");
+      expect(result._hints?.warning).toMatch(/clobbering/i);
+      expect(api.patch).not.toHaveBeenCalled();
+    });
+
+    it("overwrites despite drift when forceWrite is true", async () => {
+      // Push #1 — establishes the snapshot at "v1".
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+      await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "v1" },
+      });
+
+      // Drifted remote, but this write forces through.
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "edited in the UI" },
+      });
+      api.patch.mockClear();
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "v2 forced" },
+        forceWrite: true,
+      });
+
+      expect(result.updated).toBe(true);
+      expect(result.conflict).toBeUndefined();
+      expect(api.patch).toHaveBeenCalledTimes(1);
+      expect(api.patch.mock.calls[0][1].config.code).toBe("v2 forced");
     });
   });
 
