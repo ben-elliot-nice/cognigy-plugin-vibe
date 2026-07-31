@@ -8,11 +8,21 @@ const queryClaudeCodePlugin = jest.fn<
   () => { version: string | null; scope: string | null } | null
 >(() => null);
 const updateClaudeCode = jest.fn(() => ({ method: "cli" as const }));
+const uninstallClaudeCode = jest.fn(() => ({
+  method: "cli" as const,
+  removedPlugin: true,
+  removedMarketplace: true,
+}));
 
 const desktopHasCognigyEntry = jest.fn<() => boolean>(() => false);
 const installedDesktopEngineVersion = jest.fn<() => string | null>(() => null);
 const installClaudeDesktop = jest.fn();
 const installDesktopEngine = jest.fn();
+const uninstallClaudeDesktop = jest.fn(() => ({
+  configPath: "/home/.config/claude_desktop_config.json",
+  removedEntry: true,
+  removedEngine: false,
+}));
 
 const writeDesktopLauncher = jest.fn(() => "/home/.cognigy-plugin/launch.mjs");
 
@@ -20,12 +30,25 @@ const readUserConfigFile = jest.fn(() => ({}) as Record<string, string>);
 
 const runNpm = jest.fn(() => ({ status: 0, stdout: "1.7.0\n" }));
 
+// `ask()` in setup.ts creates a fresh readline interface per call; queue up
+// canned answers so prompt-driven tests (runUninstall) can script responses.
+const answerQueue: string[] = [];
+const rlQuestion = jest.fn((_q: string, cb: (answer: string) => void): void => {
+  cb(answerQueue.shift() ?? "");
+});
+jest.unstable_mockModule("readline", () => ({
+  createInterface: () => ({
+    question: rlQuestion,
+    close: jest.fn(),
+  }),
+}));
+
 jest.unstable_mockModule("../install/claudeCode.js", () => ({
   detectClaudePath,
   queryClaudeCodePlugin,
   updateClaudeCode,
   installClaudeCode: jest.fn(),
-  uninstallClaudeCode: jest.fn(),
+  uninstallClaudeCode,
   autoUpdateHint: () => "hint",
 }));
 jest.unstable_mockModule("../install/claudeDesktop.js", () => ({
@@ -34,7 +57,7 @@ jest.unstable_mockModule("../install/claudeDesktop.js", () => ({
   installClaudeDesktop,
   installDesktopEngine,
   resolveDesktopConfigPath: () => "/home/.config/claude_desktop_config.json",
-  uninstallClaudeDesktop: jest.fn(),
+  uninstallClaudeDesktop,
 }));
 jest.unstable_mockModule("../install/desktopLauncher.js", () => ({
   DESKTOP_LAUNCHER_FILE: "/home/.cognigy-plugin/desktop-launch.mjs",
@@ -56,7 +79,48 @@ jest.unstable_mockModule("fs", () => ({
   realpathSync: (p: string) => p,
 }));
 
-const { runStatus, runUpdate } = await import("../setup.js");
+const { runStatus, runUpdate, runUninstall } = await import("../setup.js");
+
+/** Temporarily force `process.stdin.isTTY` for a test. */
+function withTTY<T>(tty: boolean, fn: () => T): T {
+  const original = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+  Object.defineProperty(process.stdin, "isTTY", {
+    value: tty,
+    configurable: true,
+  });
+  try {
+    return fn();
+  } finally {
+    if (original) Object.defineProperty(process.stdin, "isTTY", original);
+    else delete (process.stdin as { isTTY?: boolean }).isTTY;
+  }
+}
+
+async function captureStdoutAsync(
+  fn: () => Promise<void>,
+): Promise<{ out: string; err: string }> {
+  let out = "";
+  let err = "";
+  const outSpy = jest
+    .spyOn(process.stdout, "write")
+    .mockImplementation((chunk: unknown) => {
+      out += String(chunk);
+      return true;
+    });
+  const errSpy = jest
+    .spyOn(process.stderr, "write")
+    .mockImplementation((chunk: unknown) => {
+      err += String(chunk);
+      return true;
+    });
+  try {
+    await fn();
+  } finally {
+    outSpy.mockRestore();
+    errSpy.mockRestore();
+  }
+  return { out, err };
+}
 
 function captureStdout(fn: () => void): string {
   let out = "";
@@ -78,14 +142,26 @@ beforeEach(() => {
   detectClaudePath.mockReset().mockReturnValue(null);
   queryClaudeCodePlugin.mockReset().mockReturnValue(null);
   updateClaudeCode.mockReset().mockReturnValue({ method: "cli" });
+  uninstallClaudeCode.mockReset().mockReturnValue({
+    method: "cli",
+    removedPlugin: true,
+    removedMarketplace: true,
+  });
   desktopHasCognigyEntry.mockReset().mockReturnValue(false);
   installedDesktopEngineVersion.mockReset().mockReturnValue(null);
   installClaudeDesktop.mockReset();
   installDesktopEngine.mockReset();
+  uninstallClaudeDesktop.mockReset().mockReturnValue({
+    configPath: "/home/.config/claude_desktop_config.json",
+    removedEntry: true,
+    removedEngine: false,
+  });
   writeDesktopLauncher.mockReset().mockReturnValue("/x/launch.mjs");
   readUserConfigFile.mockReset().mockReturnValue({});
   runNpm.mockReset().mockReturnValue({ status: 0, stdout: "1.7.0\n" });
   existsPaths.clear();
+  answerQueue.length = 0;
+  rlQuestion.mockClear();
 });
 
 describe("runStatus", () => {
@@ -150,6 +226,39 @@ describe("runStatus", () => {
       COGNIGY_API_KEY: "secret",
     });
   });
+
+  it("reports 'unknown (offline?)' for the latest engine when npm is unreachable", () => {
+    runNpm.mockReturnValue({ status: 1, stdout: "" });
+    const out = captureStdout(() => runStatus([]));
+    expect(out).toContain("unknown (offline?)");
+  });
+
+  it("does not flag Claude Code drift when npm is unreachable (latest unknown)", () => {
+    runNpm.mockReturnValue({ status: 1, stdout: "" });
+    detectClaudePath.mockReturnValue("/usr/bin/claude");
+    queryClaudeCodePlugin.mockReturnValue({ version: "1.6.0", scope: "user" });
+    const out = captureStdout(() => runStatus([]));
+    expect(out).toContain("No drift detected.");
+  });
+
+  it("--fix reports a per-action failure and keeps fixing the rest", () => {
+    detectClaudePath.mockReturnValue("/usr/bin/claude");
+    queryClaudeCodePlugin.mockReturnValue({ version: "1.6.0", scope: "user" });
+    desktopHasCognigyEntry.mockReturnValue(true);
+    installedDesktopEngineVersion.mockReturnValue("1.5.0");
+    existsPaths.clear(); // launcher also missing
+    updateClaudeCode.mockImplementation(() => {
+      throw new Error("plugin update failed");
+    });
+
+    const out = captureStdout(() => runStatus(["--fix"]));
+
+    expect(out).toContain("✗");
+    expect(out).toContain("plugin update failed");
+    // The other drifted surfaces still got fixed despite the failure above.
+    expect(writeDesktopLauncher).toHaveBeenCalledTimes(1);
+    expect(installDesktopEngine).toHaveBeenCalledWith("1.7.0");
+  });
 });
 
 describe("runUpdate --check", () => {
@@ -175,5 +284,125 @@ describe("runUpdate --check", () => {
     detectClaudePath.mockReturnValue("/usr/bin/claude");
     captureStdout(() => runUpdate([]));
     expect(updateClaudeCode).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports it could not reach npm when the registry is unreachable", () => {
+    runNpm.mockReturnValue({ status: 1, stdout: "" });
+    const out = captureStdout(() => runUpdate(["--check"]));
+    expect(out).toContain("Could not reach npm");
+    expect(updateClaudeCode).not.toHaveBeenCalled();
+  });
+
+  it("reports a Desktop engine update available", () => {
+    installedDesktopEngineVersion.mockReturnValue("1.5.0");
+    const out = captureStdout(() => runUpdate(["--check"]));
+    expect(out).toContain("Claude Desktop engine: update available");
+    expect(out).toContain("1.5.0");
+    expect(out).toContain("1.7.0");
+  });
+
+  it("reports the Desktop engine up to date", () => {
+    installedDesktopEngineVersion.mockReturnValue("1.7.0");
+    const out = captureStdout(() => runUpdate(["--check"]));
+    expect(out).toContain("Claude Desktop engine: up to date (1.7.0)");
+  });
+});
+
+describe("runUninstall", () => {
+  let exitSpy: jest.SpiedFunction<typeof process.exit>;
+
+  beforeEach(() => {
+    exitSpy = jest.spyOn(process, "exit").mockImplementation(((
+      code?: number,
+    ) => {
+      throw new Error(`process.exit:${code}`);
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  it("refuses non-interactively without --yes: exits 1, removes nothing", async () => {
+    await expect(
+      withTTY(false, () => captureStdoutAsync(() => runUninstall([]))),
+    ).rejects.toThrow("process.exit:1");
+    expect(uninstallClaudeCode).not.toHaveBeenCalled();
+    expect(uninstallClaudeDesktop).not.toHaveBeenCalled();
+  });
+
+  it("TTY prompt, answers 'n': aborts, removes nothing", async () => {
+    answerQueue.push("n");
+    const { out } = await withTTY(true, () =>
+      captureStdoutAsync(() => runUninstall([])),
+    );
+    expect(out).toContain("Aborted.");
+    expect(uninstallClaudeCode).not.toHaveBeenCalled();
+    expect(uninstallClaudeDesktop).not.toHaveBeenCalled();
+  });
+
+  it("TTY prompt, answers 'y': removes both surfaces", async () => {
+    answerQueue.push("y");
+    await withTTY(true, () => captureStdoutAsync(() => runUninstall([])));
+    expect(uninstallClaudeCode).toHaveBeenCalledTimes(1);
+    expect(uninstallClaudeDesktop).toHaveBeenCalledTimes(1);
+  });
+
+  it("--yes skips the prompt entirely", async () => {
+    await captureStdoutAsync(() => runUninstall(["--yes"]));
+    expect(rlQuestion).not.toHaveBeenCalled();
+    expect(uninstallClaudeCode).toHaveBeenCalledTimes(1);
+    expect(uninstallClaudeDesktop).toHaveBeenCalledTimes(1);
+  });
+
+  it("-y is accepted as shorthand for --yes", async () => {
+    await captureStdoutAsync(() => runUninstall(["-y"]));
+    expect(uninstallClaudeCode).toHaveBeenCalledTimes(1);
+  });
+
+  it("--purge is forwarded to uninstallClaudeDesktop as purgeEngine=true", async () => {
+    await captureStdoutAsync(() => runUninstall(["--yes", "--purge"]));
+    expect(uninstallClaudeDesktop).toHaveBeenCalledWith(
+      "/home/.config/claude_desktop_config.json",
+      true,
+    );
+  });
+
+  it("without --purge, forwards purgeEngine=false", async () => {
+    await captureStdoutAsync(() => runUninstall(["--yes"]));
+    expect(uninstallClaudeDesktop).toHaveBeenCalledWith(
+      "/home/.config/claude_desktop_config.json",
+      false,
+    );
+  });
+
+  it("reports 'nothing to remove' when the CLI removed nothing", async () => {
+    uninstallClaudeCode.mockReturnValue({
+      method: "cli",
+      removedPlugin: false,
+      removedMarketplace: false,
+    });
+    const { out } = await captureStdoutAsync(() => runUninstall(["--yes"]));
+    expect(out).toContain("nothing to remove");
+  });
+
+  it("reports 'no connector found' when Desktop had no entry", async () => {
+    uninstallClaudeDesktop.mockReturnValue({
+      configPath: "/home/.config/claude_desktop_config.json",
+      removedEntry: false,
+      removedEngine: false,
+    });
+    const { out } = await captureStdoutAsync(() => runUninstall(["--yes"]));
+    expect(out).toContain("no connector found");
+  });
+
+  it("falls back to manual commands when the claude CLI is absent", async () => {
+    uninstallClaudeCode.mockReturnValue({
+      method: "fallback",
+      commands: ["/plugin uninstall cognigy@cognigy-plugin"],
+    });
+    const { out } = await captureStdoutAsync(() => runUninstall(["--yes"]));
+    expect(out).toContain("'claude' CLI not found");
+    expect(out).toContain("/plugin uninstall cognigy@cognigy-plugin");
   });
 });

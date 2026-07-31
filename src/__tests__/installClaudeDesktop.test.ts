@@ -27,8 +27,12 @@ jest.unstable_mockModule("../install/desktopLauncher.js", () => ({
   writeDesktopLauncher: () => join(FAKE_HOME, "desktop-launch.mjs"),
 }));
 
-const { installClaudeDesktop, installDesktopEngine, ENGINE_PREFIX } =
-  await import("../install/claudeDesktop.js");
+const {
+  installClaudeDesktop,
+  installDesktopEngine,
+  uninstallClaudeDesktop,
+  ENGINE_PREFIX,
+} = await import("../install/claudeDesktop.js");
 
 const tmpDirs: string[] = [FAKE_HOME];
 function freshConfigPath(): string {
@@ -125,5 +129,74 @@ describe("installDesktopEngine", () => {
   it("throws when the install fails", () => {
     runNpm.mockReturnValueOnce({ status: 1, error: undefined });
     expect(() => installDesktopEngine("1.7.0")).toThrow(/Failed to install/);
+  });
+});
+
+describe("uninstallClaudeDesktop", () => {
+  it("no-ops when the config file is absent — removedEntry stays false", () => {
+    const configPath = freshConfigPath(); // never written
+    const result = uninstallClaudeDesktop(configPath, false);
+    expect(result).toEqual({
+      configPath,
+      removedEntry: false,
+      removedEngine: false,
+    });
+  });
+
+  it("leaves an entry-less config untouched (removed stays false, write skipped)", () => {
+    const configPath = freshConfigPath();
+    const original = JSON.stringify({
+      mcpServers: { other: { command: "x", args: [] } },
+    });
+    writeFileSync(configPath, original);
+
+    const result = uninstallClaudeDesktop(configPath, false);
+
+    expect(result.removedEntry).toBe(false);
+    // File left byte-for-byte as written (no rewrite happened).
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+  });
+
+  it("removes the Cognigy entry, preserving other servers", () => {
+    const configPath = freshConfigPath();
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        mcpServers: {
+          other: { command: "x", args: [] },
+          Cognigy: { command: "node", args: ["/x/launch.mjs"], env: {} },
+        },
+      }),
+    );
+
+    const result = uninstallClaudeDesktop(configPath, false);
+
+    expect(result.removedEntry).toBe(true);
+    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(cfg.mcpServers.Cognigy).toBeUndefined();
+    expect(cfg.mcpServers.other).toEqual({ command: "x", args: [] });
+  });
+
+  it("purgeEngine:false leaves ~/.cognigy-plugin alone even when it exists", () => {
+    const configPath = freshConfigPath();
+    // Ensure the engine prefix exists (from an earlier install test run).
+    installDesktopEngine("1.7.0");
+    expect(existsSync(ENGINE_PREFIX)).toBe(true);
+
+    const result = uninstallClaudeDesktop(configPath, false);
+
+    expect(result.removedEngine).toBe(false);
+    expect(existsSync(ENGINE_PREFIX)).toBe(true);
+  });
+
+  it("purgeEngine:true removes the engine prefix and sets removedEngine:true", () => {
+    const configPath = freshConfigPath();
+    installDesktopEngine("1.7.0");
+    expect(existsSync(ENGINE_PREFIX)).toBe(true);
+
+    const result = uninstallClaudeDesktop(configPath, true);
+
+    expect(result.removedEngine).toBe(true);
+    expect(existsSync(ENGINE_PREFIX)).toBe(false);
   });
 });

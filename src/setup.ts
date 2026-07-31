@@ -626,7 +626,7 @@ export function runUpdate(argv: string[]): void {
 }
 
 /** `uninstall` — remove the plugin + connector. `--purge` also drops ~/.cognigy-plugin. */
-async function runUninstall(argv: string[]): Promise<void> {
+export async function runUninstall(argv: string[]): Promise<void> {
   const purge = argv.includes("--purge");
   const assumeYes = argv.includes("--yes") || argv.includes("-y");
   process.stdout.write(bold(cyan("\nUninstalling NiCE Cognigy Plugin\n\n")));
