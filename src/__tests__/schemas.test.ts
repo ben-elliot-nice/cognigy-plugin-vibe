@@ -472,6 +472,56 @@ describe("deleteResourceSchema", () => {
   });
 });
 
+describe("manageKnowledgeSchema — tags refinements", () => {
+  it("accepts undefined tags", () => {
+    expect(() =>
+      schemas.manageKnowledgeSchema.parse({
+        operation: "create_source",
+        knowledgeStoreId: VALID_ID,
+      }),
+    ).not.toThrow();
+  });
+
+  it("accepts an array of clean tags", () => {
+    const result = schemas.manageKnowledgeSchema.parse({
+      operation: "create_source",
+      knowledgeStoreId: VALID_ID,
+      tags: ["demo", "release-notes"],
+    });
+    expect(result.tags).toEqual(["demo", "release-notes"]);
+  });
+
+  it("rejects a tag containing a comma", () => {
+    expect(() =>
+      schemas.manageKnowledgeSchema.parse({
+        operation: "create_source",
+        knowledgeStoreId: VALID_ID,
+        tags: ["demo,release"],
+      }),
+    ).toThrow(/comma/i);
+  });
+
+  it("rejects a blank (whitespace-only) tag", () => {
+    expect(() =>
+      schemas.manageKnowledgeSchema.parse({
+        operation: "create_source",
+        knowledgeStoreId: VALID_ID,
+        tags: ["demo", "   "],
+      }),
+    ).toThrow(/empty or whitespace/i);
+  });
+
+  it("rejects an empty-string tag", () => {
+    expect(() =>
+      schemas.manageKnowledgeSchema.parse({
+        operation: "create_source",
+        knowledgeStoreId: VALID_ID,
+        tags: [""],
+      }),
+    ).toThrow(/empty or whitespace/i);
+  });
+});
+
 describe("createToolSchema", () => {
   it("accepts valid tool type", () => {
     const result = schemas.createToolSchema.parse({

@@ -69,6 +69,45 @@ describe("validatePngDimensions", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/too small/i);
   });
+
+  it.each([
+    [135, 184],
+    [137, 184],
+    [136, 183],
+    [136, 185],
+  ])("rejects off-by-one dimensions %dx%d", (width, height) => {
+    const result = validatePngDimensions(makePngBuffer(width, height));
+    expect(result.ok).toBe(false);
+    expect(result.width).toBe(width);
+    expect(result.height).toBe(height);
+  });
+
+  it("rejects a corrupt-but-signed IHDR with 0x0 dimensions", () => {
+    const result = validatePngDimensions(makePngBuffer(0, 0));
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/0x0/);
+  });
+
+  it("rejects a corrupt-but-signed IHDR with huge dimensions", () => {
+    const result = validatePngDimensions(makePngBuffer(0xffffffff, 0xffffffff));
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/4294967295x4294967295/);
+  });
+
+  it("rejects a buffer that is exactly 23 bytes (one short of the minimum)", () => {
+    const result = validatePngDimensions(Buffer.alloc(23));
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/too small/i);
+  });
+
+  it("accepts the exact 24-byte boundary when it encodes valid dimensions", () => {
+    // makePngBuffer already allocates exactly 24 bytes — confirm the boundary
+    // itself (not just "bigger than 24") is handled correctly.
+    const buf = makePngBuffer(136, 184);
+    expect(buf.length).toBe(24);
+    const result = validatePngDimensions(buf);
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe("guessKnowledgeContentType", () => {
@@ -81,6 +120,14 @@ describe("guessKnowledgeContentType", () => {
   it("returns null for unknown or missing extensions", () => {
     expect(guessKnowledgeContentType("mystery.xyz")).toBeNull();
     expect(guessKnowledgeContentType("noextension")).toBeNull();
+  });
+
+  it("is case-insensitive for uppercase extensions", () => {
+    expect(guessKnowledgeContentType("REPORT.PDF")).toBe("application/pdf");
+    expect(guessKnowledgeContentType("Notes.TXT")).toBe("text/plain");
+    expect(guessKnowledgeContentType("Deck.PPTX")).toBe(
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    );
   });
 });
 
