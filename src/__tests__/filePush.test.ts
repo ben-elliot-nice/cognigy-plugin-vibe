@@ -1,5 +1,5 @@
 import { describe, it, expect } from "@jest/globals";
-import { mkdtempSync, writeFileSync, rmSync } from "fs";
+import { mkdtempSync, writeFileSync, rmSync, chmodSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { resolveContent } from "../tools/filePush.js";
@@ -113,5 +113,129 @@ describe("resolveContent", () => {
     });
     expect(result.error).toMatch(/Failed to read/);
     expect(result.error).toMatch(/permission denied/);
+  });
+
+  it("surfaces a real EACCES permission error from the filesystem", async () => {
+    const d = makeTmpDir();
+    const file = join(d, "locked.js");
+    writeFileSync(file, "input.result = 1;", "utf-8");
+    chmodSync(file, 0o000);
+
+    try {
+      const result = await resolveContent({ filePath: file, kind: "text" });
+      // On some CI environments (e.g. running as root) chmod 000 doesn't
+      // actually block reads — only assert the failure mode when it does.
+      if (result.error !== undefined) {
+        expect(result.error).toMatch(/Failed to read/);
+      }
+    } finally {
+      chmodSync(file, 0o644);
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a relative filePath even when the file exists", async () => {
+    const result = await resolveContent({
+      filePath: "relative/node.js",
+      kind: "text",
+    });
+    expect(result.error).toMatch(/absolute path/i);
+    expect(result.content).toBeUndefined();
+  });
+
+  it("rejects a relative filePath for kind json too", async () => {
+    const result = await resolveContent({
+      filePath: "./params.json",
+      kind: "json",
+    });
+    expect(result.error).toMatch(/absolute path/i);
+  });
+
+  it("errors when a JSON file parses to a non-object (array)", async () => {
+    const d = makeTmpDir();
+    const file = join(d, "array.json");
+    writeFileSync(file, "[1,2,3]", "utf-8");
+
+    const result = await resolveContent({ filePath: file, kind: "json" });
+    expect(result.error).toMatch(/expected a JSON object/i);
+    expect(result.error).toMatch(/an array/i);
+    expect(result.content).toBeUndefined();
+    expect(result.parsed).toBeUndefined();
+
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  it("errors when a JSON file parses to a scalar (number)", async () => {
+    const d = makeTmpDir();
+    const file = join(d, "number.json");
+    writeFileSync(file, "42", "utf-8");
+
+    const result = await resolveContent({ filePath: file, kind: "json" });
+    expect(result.error).toMatch(/expected a JSON object/i);
+
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  it("errors when a JSON file parses to a string", async () => {
+    const d = makeTmpDir();
+    const file = join(d, "string.json");
+    writeFileSync(file, '"hello"', "utf-8");
+
+    const result = await resolveContent({ filePath: file, kind: "json" });
+    expect(result.error).toMatch(/expected a JSON object/i);
+
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  it("errors when a JSON file parses to null", async () => {
+    const d = makeTmpDir();
+    const file = join(d, "null.json");
+    writeFileSync(file, "null", "utf-8");
+
+    const result = await resolveContent({ filePath: file, kind: "json" });
+    expect(result.error).toMatch(/expected a JSON object/i);
+    expect(result.error).toMatch(/null/i);
+
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  it("errors when inline JSON parses to a non-object (array)", async () => {
+    const result = await resolveContent({ inline: "[1,2,3]", kind: "json" });
+    expect(result.error).toMatch(/expected a JSON object/i);
+    expect(result.content).toBeUndefined();
+  });
+
+  it("accepts an empty text file as valid empty content", async () => {
+    const d = makeTmpDir();
+    const file = join(d, "empty.js");
+    writeFileSync(file, "", "utf-8");
+
+    const result = await resolveContent({ filePath: file, kind: "text" });
+    expect(result.error).toBeUndefined();
+    expect(result.content).toBe("");
+
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  it("errors on an empty json file (invalid JSON, not a valid empty value)", async () => {
+    const d = makeTmpDir();
+    const file = join(d, "empty.json");
+    writeFileSync(file, "", "utf-8");
+
+    const result = await resolveContent({ filePath: file, kind: "json" });
+    expect(result.error).toMatch(/Invalid JSON/);
+
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  it("surfaces a legible error (EISDIR) when filePath points at a directory", async () => {
+    const d = makeTmpDir();
+
+    const result = await resolveContent({ filePath: d, kind: "text" });
+    expect(result.error).toBeDefined();
+    expect(result.error).toMatch(/Failed to read/);
+    expect(result.content).toBeUndefined();
+
+    rmSync(d, { recursive: true, force: true });
   });
 });

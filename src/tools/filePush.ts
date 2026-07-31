@@ -18,8 +18,18 @@
  */
 
 import { readFile as fsReadFile } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 
 export type PushContentKind = "text" | "json";
+
+/**
+ * A JSON Schema (or similar config-shaped JSON) must parse to a plain
+ * object — a scalar, array, or null is never valid here even though it is
+ * valid JSON.
+ */
+function isPlainObject(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 export interface ResolveContentOptions {
   /** Inline content passed directly as a tool parameter (e.g. config.code). */
@@ -61,13 +71,32 @@ export async function resolveContent(
   if (filePath === undefined) {
     if (inline === undefined) return {};
     if (kind === "json") {
+      let parsed: unknown;
       try {
-        return { content: inline, parsed: JSON.parse(inline) };
+        parsed = JSON.parse(inline);
       } catch (err: any) {
         return { error: `Invalid JSON: ${err?.message ?? String(err)}` };
       }
+      if (!isPlainObject(parsed)) {
+        return {
+          error: `Invalid JSON: expected a JSON object, got ${
+            parsed === null
+              ? "null"
+              : Array.isArray(parsed)
+                ? "an array"
+                : typeof parsed
+          }.`,
+        };
+      }
+      return { content: inline, parsed };
     }
     return { content: inline };
+  }
+
+  if (!isAbsolute(filePath)) {
+    return {
+      error: `filePath must be an absolute path, got: ${filePath}`,
+    };
   }
 
   const readFileImpl =
@@ -92,6 +121,17 @@ export async function resolveContent(
     } catch (err: any) {
       return {
         error: `Invalid JSON in ${filePath}: ${err?.message ?? String(err)}`,
+      };
+    }
+    if (!isPlainObject(parsed)) {
+      return {
+        error: `Invalid JSON in ${filePath}: expected a JSON object, got ${
+          parsed === null
+            ? "null"
+            : Array.isArray(parsed)
+              ? "an array"
+              : typeof parsed
+        }.`,
       };
     }
     return { content: raw, parsed };
