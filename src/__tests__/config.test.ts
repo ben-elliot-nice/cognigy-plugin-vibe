@@ -244,6 +244,149 @@ describe("loadConfig", () => {
     });
   });
 
+  describe("explicit ports are preserved across derivation", () => {
+    it("preserves the port when deriving the endpoint URL (.cognigy.ai)", () => {
+      process.env.COGNIGY_API_BASE_URL = "https://api-trial.cognigy.ai:8443";
+      process.env.COGNIGY_API_KEY = "test-key";
+      const config = loadConfig();
+      expect(config.endpointBaseUrl).toBe(
+        "https://endpoint-trial.cognigy.ai:8443",
+      );
+    });
+
+    it("preserves the port when deriving the webchat and static URLs (.cognigy.ai)", () => {
+      process.env.COGNIGY_API_BASE_URL = "https://api-trial.cognigy.ai:8443";
+      process.env.COGNIGY_API_KEY = "test-key";
+      const config = loadConfig();
+      expect(config.webchatBaseUrl).toBe(
+        "https://webchat-trial.cognigy.ai:8443",
+      );
+      expect(config.staticFilesBaseUrl).toBe(
+        "https://static-trial.cognigy.ai:8443",
+      );
+    });
+
+    it("preserves the port when deriving the endpoint URL (CXone host)", () => {
+      process.env.COGNIGY_API_BASE_URL =
+        "https://cognigy-api-au1.nicecxone.com:9443";
+      process.env.COGNIGY_API_KEY = "test-key";
+      const config = loadConfig();
+      expect(config.endpointBaseUrl).toBe(
+        "https://cognigy-endpoint-au1.nicecxone.com:9443",
+      );
+    });
+  });
+
+  describe("COGNIGY_STATIC_FILES_BASE_URL override", () => {
+    it("uses the explicit override if provided instead of deriving", () => {
+      process.env.COGNIGY_API_BASE_URL = "https://api-trial.cognigy.ai";
+      process.env.COGNIGY_API_KEY = "test-key";
+      process.env.COGNIGY_STATIC_FILES_BASE_URL =
+        "https://custom-static.example.com";
+      const config = loadConfig();
+      expect(config.staticFilesBaseUrl).toBe(
+        "https://custom-static.example.com",
+      );
+    });
+  });
+
+  describe("hosts with no 'api-' label at all", () => {
+    it("documents current behaviour: derived URLs pass through unchanged", () => {
+      // No "cognigy-" CXone prefix, no "api-" label, and not *.cognigy.ai
+      // (so normalizeApiBaseUrl doesn't touch it either). There is no label
+      // to swap, so deriveSiblingBaseUrl can't compute a sibling host and
+      // intentionally falls back to returning the API URL unchanged
+      // (logging a warning) rather than guessing. This is asserted
+      // explicitly here so a future change can't silently alter it.
+      process.env.COGNIGY_API_BASE_URL = "https://trial.nicecxone.com";
+      process.env.COGNIGY_API_KEY = "test-key";
+      const config = loadConfig();
+      expect(config.apiBaseUrl).toBe("https://trial.nicecxone.com");
+      expect(config.endpointBaseUrl).toBe(config.apiBaseUrl);
+      expect(config.webchatBaseUrl).toBe(config.apiBaseUrl);
+      expect(config.staticFilesBaseUrl).toBe(config.apiBaseUrl);
+    });
+  });
+
+  describe("garbage / non-URL input", () => {
+    it("passes a non-URL string through unchanged in all base-URL fields", () => {
+      process.env.COGNIGY_API_BASE_URL = "not-a-real-url";
+      process.env.COGNIGY_API_KEY = "test-key";
+      const config = loadConfig();
+      expect(config.apiBaseUrl).toBe("not-a-real-url");
+      expect(config.endpointBaseUrl).toBe("not-a-real-url");
+      expect(config.webchatBaseUrl).toBe("not-a-real-url");
+      expect(config.staticFilesBaseUrl).toBe("not-a-real-url");
+    });
+
+    it("passes a bare hostname with no scheme through unchanged", () => {
+      process.env.COGNIGY_API_BASE_URL = "trial.cognigy.ai";
+      process.env.COGNIGY_API_KEY = "test-key";
+      const config = loadConfig();
+      expect(config.apiBaseUrl).toBe("trial.cognigy.ai");
+      expect(config.endpointBaseUrl).toBe("trial.cognigy.ai");
+    });
+  });
+
+  describe("uppercase hosts", () => {
+    // Note: the API host itself already starts with "api-" here, so
+    // normalizeApiBaseUrl's mutating branch never runs and the raw casing
+    // of apiBaseUrl is passed through unchanged (a separate, pre-existing
+    // quirk not covered by this PR). What we're pinning down is that
+    // deriveSiblingBaseUrl's derived hostnames come out lowercased, because
+    // the WHATWG `URL` parser lowercases `.hostname` regardless of input
+    // case — this is relied upon implicitly and worth a regression test.
+    it("derives a lowercase endpoint URL for an uppercase .cognigy.ai host", () => {
+      process.env.COGNIGY_API_BASE_URL = "https://API-TRIAL.COGNIGY.AI";
+      process.env.COGNIGY_API_KEY = "test-key";
+      const config = loadConfig();
+      expect(config.endpointBaseUrl).toBe("https://endpoint-trial.cognigy.ai");
+    });
+
+    it("derives a lowercase endpoint URL for an uppercase CXone host", () => {
+      process.env.COGNIGY_API_BASE_URL =
+        "https://COGNIGY-API-AU1.NICECXONE.COM";
+      process.env.COGNIGY_API_KEY = "test-key";
+      const config = loadConfig();
+      expect(config.endpointBaseUrl).toBe(
+        "https://cognigy-endpoint-au1.nicecxone.com",
+      );
+    });
+  });
+
+  describe("trailing slashes on CXone hosts", () => {
+    it("strips trailing slashes from a CXone API URL", () => {
+      process.env.COGNIGY_API_BASE_URL =
+        "https://cognigy-api-eu2.nicecxone.com///";
+      process.env.COGNIGY_API_KEY = "test-key";
+      const config = loadConfig();
+      expect(config.apiBaseUrl).toBe("https://cognigy-api-eu2.nicecxone.com");
+      expect(config.endpointBaseUrl).toBe(
+        "https://cognigy-endpoint-eu2.nicecxone.com",
+      );
+    });
+  });
+
+  describe("additional CXone regions", () => {
+    it.each(["eu1", "use1"])(
+      "derives sibling URLs for the %s region",
+      (region) => {
+        process.env.COGNIGY_API_BASE_URL = `https://cognigy-api-${region}.nicecxone.com`;
+        process.env.COGNIGY_API_KEY = "test-key";
+        const config = loadConfig();
+        expect(config.endpointBaseUrl).toBe(
+          `https://cognigy-endpoint-${region}.nicecxone.com`,
+        );
+        expect(config.webchatBaseUrl).toBe(
+          `https://cognigy-webchat-${region}.nicecxone.com`,
+        );
+        expect(config.staticFilesBaseUrl).toBe(
+          `https://cognigy-static-${region}.nicecxone.com`,
+        );
+      },
+    );
+  });
+
   describe("on-disk fallback (setup CLI)", () => {
     it("does not read the fallback file when both env vars are set", () => {
       process.env.COGNIGY_API_BASE_URL = "https://api-dev.cognigy.ai";

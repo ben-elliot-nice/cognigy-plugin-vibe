@@ -77,11 +77,19 @@ const API_HOSTNAME_LABEL = /^(.*-)?api-(.+)$/;
 /**
  * Derive a sibling base URL from the API base URL by swapping the "api-"
  * hostname label for `targetLabel`, preserving any subdomain prefix before
- * it (e.g. the "cognigy-" in NiCE CXone hosts).
+ * it (e.g. the "cognigy-" in NiCE CXone hosts) *and* any explicit port
+ * (e.g. ":8443" on a non-standard-port trial host).
  *
  * Examples:
  *   https://api-{env}.cognigy.ai            -> https://{targetLabel}-{env}.cognigy.ai
  *   https://cognigy-api-{env}.nicecxone.com -> https://cognigy-{targetLabel}-{env}.nicecxone.com
+ *   https://api-{env}.cognigy.ai:8443       -> https://{targetLabel}-{env}.cognigy.ai:8443
+ *
+ * If the host carries no "api-" label at all (e.g. a bespoke on-prem host
+ * that doesn't follow the convention), there is nothing to swap — the
+ * sibling can't be derived, so we return the API URL unchanged and log a
+ * warning rather than guess. Callers who hit this should set the relevant
+ * COGNIGY_*_BASE_URL env var explicitly.
  */
 function deriveSiblingBaseUrl(apiBaseUrl: string, targetLabel: string): string {
   try {
@@ -89,8 +97,14 @@ function deriveSiblingBaseUrl(apiBaseUrl: string, targetLabel: string): string {
     const match = url.hostname.match(API_HOSTNAME_LABEL);
     if (match) {
       const prefix = match[1] ?? "";
-      return `${url.protocol}//${prefix}${targetLabel}-${match[2]}`;
+      const port = url.port ? `:${url.port}` : "";
+      return `${url.protocol}//${prefix}${targetLabel}-${match[2]}${port}`;
     }
+    console.error(
+      `[config] Could not derive ${targetLabel} URL from "${apiBaseUrl}": ` +
+        `hostname has no "api-" label. Using the API URL unchanged — set ` +
+        `the corresponding COGNIGY_*_BASE_URL env var explicitly if this is wrong.`,
+    );
   } catch {
     // fall through
   }
