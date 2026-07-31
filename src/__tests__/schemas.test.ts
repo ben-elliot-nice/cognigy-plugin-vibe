@@ -821,4 +821,24 @@ describe("describeResourceSchemaSchema", () => {
       }),
     ).toThrow();
   });
+
+  it("rejects nodeType with a contradictory resourceType", () => {
+    expect(() =>
+      schemas.describeResourceSchemaSchema.parse({
+        resourceType: "flow",
+        nodeType: "say",
+        flowId: VALID_ID,
+      }),
+    ).toThrow();
+  });
+
+  it("accepts nodeType with the 'nodes' alias for resourceType", () => {
+    expect(() =>
+      schemas.describeResourceSchemaSchema.parse({
+        resourceType: "nodes",
+        nodeType: "say",
+        flowId: VALID_ID,
+      }),
+    ).not.toThrow();
+  });
 });

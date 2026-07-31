@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normaliseResourceType } from "../tools/schemaIntrospection.js";
 
 const idSchema = z.string().regex(/^[a-f0-9]{24}$/, "Must be a 24-char hex ID");
 
@@ -662,4 +663,13 @@ export const describeResourceSchemaSchema = z
   .refine((d) => d.nodeType !== undefined || d.operation !== undefined, {
     message: "operation is required unless nodeType is set",
     path: ["operation"],
-  });
+  })
+  .refine(
+    (d) =>
+      d.nodeType === undefined ||
+      normaliseResourceType(d.resourceType) === "node",
+    {
+      message: "nodeType is only valid with resourceType='node'",
+      path: ["resourceType"],
+    },
+  );
