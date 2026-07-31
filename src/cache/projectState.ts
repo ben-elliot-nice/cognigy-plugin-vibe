@@ -65,7 +65,7 @@ function deepMerge(base: JsonObject, override: JsonObject): JsonObject {
   return result;
 }
 
-const UNSCOPED_DIR = ".unscoped";
+export const UNSCOPED_DIR = ".unscoped";
 
 export class ProjectState {
   private state: JsonObject = {};
@@ -149,6 +149,40 @@ export class ProjectState {
 
   rememberId(namespace: string, name: string, id: string): void {
     this.set([namespace, name, "id"], id);
+  }
+
+  /**
+   * Drop every name->id mapping in `namespace` whose resolved id is `id`,
+   * e.g. after the underlying resource is deleted but the caller only knows
+   * its id (not every name that was ever remembered for it).
+   */
+  forgetByResolvedId(namespace: string, id: string): void {
+    const bucket = this.get([namespace]);
+    if (!bucket || typeof bucket !== "object" || Array.isArray(bucket)) {
+      return;
+    }
+    let changed = false;
+    for (const [name, entry] of Object.entries(bucket as JsonObject)) {
+      const entryId =
+        entry && typeof entry === "object" && !Array.isArray(entry)
+          ? (entry as JsonObject).id
+          : undefined;
+      if (entryId === id) {
+        deepSet(this.state, [namespace, name], undefined);
+        changed = true;
+      }
+    }
+    if (changed) this.save();
+  }
+
+  /**
+   * Wipe every name->id mapping this store has ever remembered. Used on
+   * idle-resync so a dangling mapping to a resource deleted while this
+   * session was idle can't survive alongside the wiped read cache.
+   */
+  clearAllNameMappings(): void {
+    this.state = deepMerge(this.readJson(this.seedPath) ?? {}, {});
+    this.save();
   }
 
   needsResync(): boolean {

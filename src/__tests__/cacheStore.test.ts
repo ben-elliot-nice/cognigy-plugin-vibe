@@ -89,6 +89,19 @@ describe("CacheStore.getOrFetch", () => {
     expect(second).toEqual({ v: "resynced" });
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
+
+  it("idle-resync also wipes the name->id map, not just the read cache", async () => {
+    const { store, clock } = makeStore({ resyncMs: 4 * 3_600_000 });
+    store.rememberId("flow", "My Flow", "flow-1");
+    store.rememberId("agentFlow", "agent-1", "flow-1");
+
+    // Any getOrFetch call runs the resync check first.
+    clock.advance(4 * 3_600_000 + 1);
+    await store.getOrFetch("agent", "a1", async () => ({ v: 1 }));
+
+    expect(store.resolveId("flow", "My Flow")).toBeUndefined();
+    expect(store.resolveId("agentFlow", "agent-1")).toBeUndefined();
+  });
 });
 
 describe("CacheStore name->id resolution", () => {
@@ -104,6 +117,99 @@ describe("CacheStore name->id resolution", () => {
     store.rememberId("agentFlow", "agent-1", "flow-1");
     store.forgetId("agentFlow", "agent-1");
     expect(store.resolveId("agentFlow", "agent-1")).toBeUndefined();
+  });
+
+  it("forgetIdByValue removes every mapping resolving to the given id", () => {
+    const { store } = makeStore();
+    store.rememberId("agentFlow", "agent-1", "flow-1");
+    store.rememberId("agentFlow", "agent-2", "flow-1");
+    store.rememberId("flow", "My Flow", "flow-1");
+
+    store.forgetIdByValue("agentFlow", "flow-1");
+
+    expect(store.resolveId("agentFlow", "agent-1")).toBeUndefined();
+    expect(store.resolveId("agentFlow", "agent-2")).toBeUndefined();
+    // Different namespace, untouched.
+    expect(store.resolveId("flow", "My Flow")).toBe("flow-1");
+  });
+});
+
+describe("CacheStore entries directory scoping", () => {
+  it("scopes the read-cache entries dir per project, not just project state", async () => {
+    const clock = new TestClock();
+    const fs = new MemoryFs();
+    const storeA = new CacheStore({
+      baseDir: "/store",
+      projectKey: "org-a.cognigy.ai",
+      clock,
+      fs,
+    });
+    const storeB = new CacheStore({
+      baseDir: "/store",
+      projectKey: "org-b.cognigy.ai",
+      clock,
+      fs,
+    });
+
+    await storeA.getOrFetch("flow", "shared-id", async () => ({
+      org: "a",
+    }));
+    await storeB.getOrFetch("flow", "shared-id", async () => ({
+      org: "b",
+    }));
+
+    // Same resourceType+id, different projects — must not collide, and an
+    // idle-resync wipe on one must not evict the other's live cache.
+    const aResult = await storeA.getOrFetch("flow", "shared-id", async () => ({
+      org: "should-not-be-called",
+    }));
+    const bResult = await storeB.getOrFetch("flow", "shared-id", async () => ({
+      org: "should-not-be-called",
+    }));
+    expect(aResult).toEqual({ org: "a" });
+    expect(bResult).toEqual({ org: "b" });
+
+    expect(fs.existsSync("/store/entries/org-a.cognigy.ai")).toBe(true);
+    expect(fs.existsSync("/store/entries/org-b.cognigy.ai")).toBe(true);
+  });
+
+  it("an idle-resync wipe for one project does not evict another project's cache", async () => {
+    const clock = new TestClock();
+    const fs = new MemoryFs();
+    const resyncMs = 4 * 3_600_000;
+    // A TTL far longer than the elapsed time so only resync (not plain TTL
+    // expiry) can explain either store's cache being wiped.
+    const ttlMs = resyncMs * 1000;
+    const storeA = new CacheStore({
+      baseDir: "/store",
+      projectKey: "org-a.cognigy.ai",
+      resyncMs,
+      ttlMs,
+      clock,
+      fs,
+    });
+    // storeB's own resync threshold is far away so this test isolates
+    // storeA's resync from storeB's independent idle tracking.
+    const storeB = new CacheStore({
+      baseDir: "/store",
+      projectKey: "org-b.cognigy.ai",
+      resyncMs: resyncMs * 100,
+      ttlMs,
+      clock,
+      fs,
+    });
+
+    await storeA.getOrFetch("flow", "f1", async () => ({ org: "a" }));
+    await storeB.getOrFetch("flow", "f1", async () => ({ org: "b" }));
+
+    clock.advance(resyncMs + 1);
+    // Only storeA goes through a resync-triggering call.
+    await storeA.getOrFetch("flow", "f1", async () => ({ org: "a-resynced" }));
+
+    const bFetch = jest.fn(async () => ({ org: "should-not-be-called" }));
+    const bResult = await storeB.getOrFetch("flow", "f1", bFetch);
+    expect(bResult).toEqual({ org: "b" });
+    expect(bFetch).not.toHaveBeenCalled();
   });
 });
 

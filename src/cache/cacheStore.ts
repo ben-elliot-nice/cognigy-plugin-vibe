@@ -28,7 +28,7 @@ import { join } from "path";
 import * as nodeFs from "fs";
 import { type Clock, type FsLike, systemClock } from "./fsLike.js";
 import { ReadCache } from "./readCache.js";
-import { ProjectState } from "./projectState.js";
+import { ProjectState, UNSCOPED_DIR } from "./projectState.js";
 
 export interface CacheStoreOptions {
   /** Root directory this store's cache + state files live under. */
@@ -54,7 +54,10 @@ export class CacheStore {
     const clock = opts.clock ?? systemClock;
     const fs = opts.fs ?? nodeFs;
     this.cache = new ReadCache(
-      join(opts.baseDir, "entries"),
+      // Scoped per project/org the same way `ProjectState` is below — an
+      // unscoped `entries` dir would let two different Cognigy projects on
+      // one machine share (and idle-resync-wipe) each other's read cache.
+      join(opts.baseDir, "entries", opts.projectKey || UNSCOPED_DIR),
       opts.ttlMs ?? DEFAULT_TTL_MS,
       clock,
       fs,
@@ -81,6 +84,9 @@ export class CacheStore {
   ): Promise<T> {
     if (this.state.needsResync()) {
       this.cache.invalidateAll();
+      // The name->id map is just as capable of pointing at a deleted/renamed
+      // resource as the read cache is — an idle gap must invalidate both.
+      this.state.clearAllNameMappings();
     }
     this.state.touchInteraction();
 
@@ -109,6 +115,16 @@ export class CacheStore {
   /** Drop a stale name->id mapping, e.g. after the underlying resource is deleted. */
   forgetId(namespace: string, name: string): void {
     this.state.set([namespace, name], undefined);
+  }
+
+  /**
+   * Drop every name->id mapping in `namespace` that resolves to `id`. Use
+   * this when the caller knows the deleted/renamed resource's id but not
+   * (or not only) the name it was remembered under — e.g. deleting a flow
+   * directly should also forget any `agentFlow` mapping that pointed at it.
+   */
+  forgetIdByValue(namespace: string, id: string): void {
+    this.state.forgetByResolvedId(namespace, id);
   }
 }
 

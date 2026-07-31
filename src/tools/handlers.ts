@@ -2427,6 +2427,14 @@ export class ToolHandlers {
     await this.apiClient.delete(url);
     // A mutation must never be masked by a stale cache entry.
     this.cacheStore?.invalidate(resourceType, id);
+    if (resourceType === "flow") {
+      // Deleting a flow directly (not via agent cascade) must also drop any
+      // name->id mapping pointing at it — both the "flow" name->id entry
+      // itself and any agent's cached "agentFlow" resolution — or a later
+      // lookup keeps resolving to a flow that no longer exists.
+      this.cacheStore?.forgetIdByValue("flow", id);
+      this.cacheStore?.forgetIdByValue("agentFlow", id);
+    }
     return { deleted: true, resourceType, id };
   }
 
@@ -2481,6 +2489,7 @@ export class ToolHandlers {
                 try {
                   await this.apiClient.delete(`/v2.0/endpoints/${epId}`);
                   deleted.push(`endpoint:${epId}`);
+                  this.cacheStore?.invalidate("endpoint", epId);
                 } catch (e: any) {
                   failed.push({
                     resource: `endpoint:${epId}`,
@@ -2512,6 +2521,7 @@ export class ToolHandlers {
         await this.apiClient.delete(`/v2.0/flows/${flowId}`);
         deleted.push(`flow:${flowId}`);
         this.cacheStore?.invalidate("flow", flowId);
+        this.cacheStore?.forgetIdByValue("flow", flowId);
       } catch (e: any) {
         failed.push({
           resource: `flow:${flowId}`,
@@ -2630,6 +2640,9 @@ export class ToolHandlers {
             fileBuffer,
             fileName,
           );
+          // Adding a source changes the store's sourceCount — never let a
+          // cached knowledge_store read mask it.
+          this.cacheStore?.invalidate("knowledge_store", storeId);
 
           return withHints(
             {
@@ -2670,6 +2683,7 @@ export class ToolHandlers {
             `/v2.0/knowledgestores/${storeId}/sources`,
             payload,
           );
+          this.cacheStore?.invalidate("knowledge_store", storeId);
           return withHints(
             {
               source: {
@@ -2713,6 +2727,7 @@ export class ToolHandlers {
           `/v2.0/knowledgestores/${storeId}/sources/${sourceId}/chunks`,
           { text: data.text, order: 1 },
         );
+        this.cacheStore?.invalidate("knowledge_store", storeId);
 
         return withHints(
           {
@@ -4360,6 +4375,7 @@ export class ToolHandlers {
         `/new/v2.0/endpoints/${endpointId}`,
         patchPayload,
       );
+      this.cacheStore?.invalidate("endpoint", endpointId!);
       endpoint = await this.apiClient.get(`/new/v2.0/endpoints/${endpointId}`);
 
       return this.buildVoiceGatewayResponse({

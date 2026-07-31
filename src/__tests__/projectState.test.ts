@@ -200,6 +200,78 @@ describe("ProjectState", () => {
     expect(state.get(["flows", "Canary", "id"])).toBe("canary");
   });
 
+  it("forgetByResolvedId drops every name mapped to the given id, leaving others intact", () => {
+    const fs = new MemoryFs();
+    const state = new ProjectState(
+      "/base",
+      "proj-123",
+      4 * 3_600_000,
+      new TestClock(),
+      fs,
+    );
+    state.rememberId("agentFlow", "agent-1", "flow-1");
+    state.rememberId("agentFlow", "agent-2", "flow-1");
+    state.rememberId("agentFlow", "agent-3", "flow-other");
+
+    state.forgetByResolvedId("agentFlow", "flow-1");
+
+    expect(state.resolveId("agentFlow", "agent-1")).toBeUndefined();
+    expect(state.resolveId("agentFlow", "agent-2")).toBeUndefined();
+    expect(state.resolveId("agentFlow", "agent-3")).toBe("flow-other");
+  });
+
+  it("forgetByResolvedId is a no-op when the namespace is empty", () => {
+    const fs = new MemoryFs();
+    const state = new ProjectState(
+      "/base",
+      "proj-123",
+      4 * 3_600_000,
+      new TestClock(),
+      fs,
+    );
+    expect(() => state.forgetByResolvedId("agentFlow", "flow-1")).not.toThrow();
+  });
+
+  it("clearAllNameMappings wipes every remembered name->id mapping", () => {
+    const fs = new MemoryFs();
+    const state = new ProjectState(
+      "/base",
+      "proj-123",
+      4 * 3_600_000,
+      new TestClock(),
+      fs,
+    );
+    state.rememberId("flow", "My Flow", "flow-1");
+    state.rememberId("agentFlow", "agent-1", "flow-1");
+
+    state.clearAllNameMappings();
+
+    expect(state.resolveId("flow", "My Flow")).toBeUndefined();
+    expect(state.resolveId("agentFlow", "agent-1")).toBeUndefined();
+  });
+
+  it("clearAllNameMappings preserves seed defaults", () => {
+    const fs = new MemoryFs();
+    fs.mkdirSync("/base/proj-123", { recursive: true });
+    fs.writeFileSync(
+      "/base/proj-123/.state-seed.json",
+      JSON.stringify({ flows: { Main: { id: "seed-id" } } }),
+    );
+    const state = new ProjectState(
+      "/base",
+      "proj-123",
+      4 * 3_600_000,
+      new TestClock(),
+      fs,
+    );
+    state.rememberId("flow", "Runtime Flow", "runtime-id");
+
+    state.clearAllNameMappings();
+
+    expect(state.get(["flows", "Main", "id"])).toBe("seed-id");
+    expect(state.resolveId("flow", "Runtime Flow")).toBeUndefined();
+  });
+
   it("asDict returns a deep copy that mutation cannot affect", () => {
     const fs = new MemoryFs();
     const state = new ProjectState(
