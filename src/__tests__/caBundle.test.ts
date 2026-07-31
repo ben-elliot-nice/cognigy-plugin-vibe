@@ -1,8 +1,13 @@
 /**
  * Tests for corporate CA trust-store resolution (src/api/caBundle.ts).
  */
-import { describe, it, expect } from "@jest/globals";
-import { resolveCaBundle, CaBundleDeps } from "../api/caBundle.js";
+import { describe, it, expect, afterEach } from "@jest/globals";
+import {
+  resolveCaBundle,
+  getCachedCaBundle,
+  __resetCaBundleCacheForTests,
+  CaBundleDeps,
+} from "../api/caBundle.js";
 
 const FAKE_CERT = (label: string) =>
   `-----BEGIN CERTIFICATE-----\n${label}\n-----END CERTIFICATE-----`;
@@ -131,5 +136,177 @@ describe("resolveCaBundle", () => {
 
     const result = resolveCaBundle(deps);
     expect(result.source).toBe("node-default");
+  });
+
+  it("distinguishes 'exists but unreadable' from 'missing' and still falls through", () => {
+    const deps = makeDeps({
+      env: { NODE_EXTRA_CA_CERTS: "/fake/unreadable.pem" },
+      // exists() reports the file is there (e.g. permissions error would
+      // still let statSync succeed) but readFile() cannot read it.
+      exists: (path) => path === "/fake/unreadable.pem",
+      readFile: () => undefined,
+    });
+
+    const result = resolveCaBundle(deps);
+    expect(result.source).toBe("node-default");
+    expect(result.ca).toBeUndefined();
+  });
+
+  it("ignores a malformed combined-bundle file and falls through to the system-bundle probe", () => {
+    const bundle = FAKE_CERT("system-root");
+    const deps = makeDeps({
+      exists: (path) =>
+        path === "/tmp/combined-ca.pem" ||
+        path === "/etc/ssl/certs/ca-certificates.crt",
+      readFile: (path) => {
+        if (path === "/tmp/combined-ca.pem") return "garbage, not a PEM cert";
+        if (path === "/etc/ssl/certs/ca-certificates.crt") return bundle;
+        return undefined;
+      },
+    });
+
+    const result = resolveCaBundle(deps);
+    expect(result.source).toBe("probe:system-bundle");
+    expect(result.ca).toEqual([bundle]);
+  });
+
+  it("skips a malformed system-bundle path and keeps scanning later candidates", () => {
+    const bundle = FAKE_CERT("later-system-root");
+    const deps = makeDeps({
+      exists: (path) =>
+        path === "/etc/pki/tls/certs/ca-bundle.crt" ||
+        path === "/etc/ssl/cert.pem",
+      readFile: (path) => {
+        // First candidate in SYSTEM_BUNDLE_PATHS exists but is malformed.
+        if (path === "/etc/pki/tls/certs/ca-bundle.crt")
+          return "not a real cert";
+        if (path === "/etc/ssl/cert.pem") return bundle;
+        return undefined;
+      },
+    });
+
+    const result = resolveCaBundle(deps);
+    expect(result.source).toBe("probe:system-bundle");
+    expect(result.ca).toEqual([bundle]);
+  });
+
+  it("falls through to node-default when the macOS `security` export fails (returns undefined)", () => {
+    const deps = makeDeps({
+      platform: "darwin",
+      execFindCertificate: () => undefined,
+    });
+
+    const result = resolveCaBundle(deps);
+    expect(result.source).toBe("node-default");
+    expect(result.ca).toBeUndefined();
+  });
+
+  it("falls through to node-default when the macOS `security` export returns non-PEM garbage", () => {
+    const deps = makeDeps({
+      platform: "darwin",
+      execFindCertificate: () => "not a cert, just garbage output",
+    });
+
+    const result = resolveCaBundle(deps);
+    expect(result.source).toBe("node-default");
+    expect(result.ca).toBeUndefined();
+  });
+
+  it("prefers NODE_EXTRA_CA_CERTS over a valid SSL_CERT_FILE when both are set and valid", () => {
+    const nodeExtra = FAKE_CERT("node-extra-root");
+    const sslCertFile = FAKE_CERT("ssl-cert-file-root");
+    const requestsCaBundle = FAKE_CERT("requests-ca-bundle-root");
+    const deps = makeDeps({
+      env: {
+        NODE_EXTRA_CA_CERTS: "/fake/node-extra.pem",
+        SSL_CERT_FILE: "/fake/ssl-cert-file.pem",
+        REQUESTS_CA_BUNDLE: "/fake/requests-ca.pem",
+      },
+      exists: () => true,
+      readFile: (path) => {
+        if (path === "/fake/node-extra.pem") return nodeExtra;
+        if (path === "/fake/ssl-cert-file.pem") return sslCertFile;
+        if (path === "/fake/requests-ca.pem") return requestsCaBundle;
+        return undefined;
+      },
+    });
+
+    const result = resolveCaBundle(deps);
+    expect(result.source).toBe("env:NODE_EXTRA_CA_CERTS");
+    expect(result.ca).toEqual([nodeExtra]);
+  });
+
+  it("prefers a valid SSL_CERT_FILE over a valid REQUESTS_CA_BUNDLE when NODE_EXTRA_CA_CERTS is unset", () => {
+    const sslCertFile = FAKE_CERT("ssl-cert-file-root");
+    const requestsCaBundle = FAKE_CERT("requests-ca-bundle-root");
+    const deps = makeDeps({
+      env: {
+        SSL_CERT_FILE: "/fake/ssl-cert-file.pem",
+        REQUESTS_CA_BUNDLE: "/fake/requests-ca.pem",
+      },
+      exists: () => true,
+      readFile: (path) => {
+        if (path === "/fake/ssl-cert-file.pem") return sslCertFile;
+        if (path === "/fake/requests-ca.pem") return requestsCaBundle;
+        return undefined;
+      },
+    });
+
+    const result = resolveCaBundle(deps);
+    expect(result.source).toBe("env:SSL_CERT_FILE");
+    expect(result.ca).toEqual([sslCertFile]);
+  });
+});
+
+describe("getCachedCaBundle / __resetCaBundleCacheForTests", () => {
+  afterEach(() => {
+    __resetCaBundleCacheForTests();
+  });
+
+  it("caches the first result and does not re-resolve on subsequent calls", () => {
+    const bundleA = FAKE_CERT("bundle-a");
+    const depsA = makeDeps({
+      env: { NODE_EXTRA_CA_CERTS: "/fake/a.pem" },
+      exists: (path) => path === "/fake/a.pem",
+      readFile: (path) => (path === "/fake/a.pem" ? bundleA : undefined),
+    });
+    const bundleB = FAKE_CERT("bundle-b");
+    const depsB = makeDeps({
+      env: { NODE_EXTRA_CA_CERTS: "/fake/b.pem" },
+      exists: (path) => path === "/fake/b.pem",
+      readFile: (path) => (path === "/fake/b.pem" ? bundleB : undefined),
+    });
+
+    const first = getCachedCaBundle(depsA);
+    expect(first.ca).toEqual([bundleA]);
+
+    // Even though depsB would resolve differently, the cached result wins.
+    const second = getCachedCaBundle(depsB);
+    expect(second).toBe(first);
+    expect(second.ca).toEqual([bundleA]);
+  });
+
+  it("__resetCaBundleCacheForTests clears the cache so the next call re-resolves", () => {
+    const bundleA = FAKE_CERT("bundle-a");
+    const depsA = makeDeps({
+      env: { NODE_EXTRA_CA_CERTS: "/fake/a.pem" },
+      exists: (path) => path === "/fake/a.pem",
+      readFile: (path) => (path === "/fake/a.pem" ? bundleA : undefined),
+    });
+    const bundleB = FAKE_CERT("bundle-b");
+    const depsB = makeDeps({
+      env: { NODE_EXTRA_CA_CERTS: "/fake/b.pem" },
+      exists: (path) => path === "/fake/b.pem",
+      readFile: (path) => (path === "/fake/b.pem" ? bundleB : undefined),
+    });
+
+    const first = getCachedCaBundle(depsA);
+    expect(first.ca).toEqual([bundleA]);
+
+    __resetCaBundleCacheForTests();
+
+    const second = getCachedCaBundle(depsB);
+    expect(second.ca).toEqual([bundleB]);
+    expect(second).not.toBe(first);
   });
 });
