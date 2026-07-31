@@ -511,6 +511,8 @@ Default choice: When unsure which toolType to use, default to "tool" (general-pu
 
 IMPORTANT: Create exactly one tool per business action. If the same toolId already exists, create_tool reuses the existing tool node instead of creating a duplicate. If you need more logic for that action, reuse the same toolNodeId with manage_flow_nodes or update_tool.
 
+For large parameters JSON Schemas, pass parametersFilePath (a local .json file) instead of config.parameters to avoid regenerating the whole schema string on every call — local-only, see parametersFilePath's description.
+
 Prerequisites: Agent must exist (created via create_ai_agent).
 To list tools: list_resources { resourceType: 'tool', aiAgentId }.
 To delete: delete_resource { resourceType: 'tool', id: toolId, aiAgentId }.
@@ -622,6 +624,11 @@ After creating, use talk_to_agent to test.`,
                 "CognigyScript expression for the Resolve Tool Action node's answer field. Controls what value is returned to the LLM as the tool result. For http tools, default: '{{JSON.stringify(input.httprequest)}}'. For general-purpose tools, default: '{{JSON.stringify(input.result)}}'. Set this to match where your code stores the result. Must be a valid CognigyScript expression.",
             },
           },
+        },
+        parametersFilePath: {
+          type: "string",
+          description:
+            "LOCAL-ONLY ergonomic (requires the MCP server to have filesystem access to this file, e.g. Claude Code's local npx launch — not available on a remote/server-hosted MCP such as Claude Desktop's connector): absolute path to a local .json file containing the tool's parameters JSON Schema, read and pushed in place of config.parameters. Lets you maintain the parameter schema as a local file with native write/edit tooling instead of regenerating the whole JSON Schema string on every call. Provide exactly one of config.parameters or parametersFilePath, not both. (tool, http)",
         },
       },
       required: ["aiAgentId", "toolType", "name", "config"],
@@ -761,6 +768,11 @@ After creating, use talk_to_agent to test.`,
             },
           },
         },
+        parametersFilePath: {
+          type: "string",
+          description:
+            "LOCAL-ONLY ergonomic (requires the MCP server to have filesystem access to this file, e.g. Claude Code's local npx launch — not available on a remote/server-hosted MCP such as Claude Desktop's connector): absolute path to a local .json file containing the tool's parameters JSON Schema, read and pushed in place of config.parameters. Provide exactly one of config.parameters or parametersFilePath, not both. (tool, http)",
+        },
       },
       required: ["aiAgentId", "toolNodeId"],
     },
@@ -770,7 +782,7 @@ After creating, use talk_to_agent to test.`,
   {
     name: "manage_flow_nodes",
     description:
-      'Manage the logic nodes inside a flow (list/get/create/update/delete) and render the flow as a diagram. Nodes are helpers that live INSIDE AI Agent tool branches: create a tool first (create_tool { toolType: "tool" }), then add nodes with parentNodeId = toolNodeId, mode = "appendChild". NEVER add standalone nodes before the AI Agent Job node. The flow-nodes skill owns the full workflow — placement, branching (ifThenElse/lookup), node config, and case values.\n\nOPERATIONS:\n- list: all nodes in a flow (id, type, label, parentId, isEntryPoint only — NO config).\n- get: one node in full incl. config (requires nodeId). Read before editing. For code nodes the config reports `hasError`; the large server-computed `transpiled` output is omitted.\n- create: add a node (requires nodeType + config). parentNodeId + mode place it — see the flow-nodes skill.\n- update: change a node\'s config or label (only provided fields change). For switch/lookup nodes, pass a `cases` array to set case values.\n- delete: remove a node.\n- render (read-only): visualize the flow. Returns an `ascii` tree (display inline in any client incl. terminal) and a `mermaid` string. Deliver the mermaid ONLY as a native Mermaid/diagram artifact — do NOT wrap it in HTML or paste it as an inline ```mermaid fence (both break the zoomable, mobile-friendly viewer). Options: focus=<nodeId|nodeId[]> highlights nodes; writeHtml writes a self-contained rich HTML graph to a local tmp file and opens it in the browser (returns htmlUrl/htmlPath — the file is already on the user\'s machine, just hand them the link). See the flow-nodes skill for details.\n\nSupported node types come from the server node registry; an unsupported nodeType returns the current list. For AI Agent tool nodes (knowledge, send_email, mcp, http) use create_tool / update_tool instead.',
+      'Manage the logic nodes inside a flow (list/get/create/update/delete) and render the flow as a diagram. Nodes are helpers that live INSIDE AI Agent tool branches: create a tool first (create_tool { toolType: "tool" }), then add nodes with parentNodeId = toolNodeId, mode = "appendChild". NEVER add standalone nodes before the AI Agent Job node. The flow-nodes skill owns the full workflow — placement, branching (ifThenElse/lookup), node config, and case values.\n\nOPERATIONS:\n- list: all nodes in a flow (id, type, label, parentId, isEntryPoint only — NO config).\n- get: one node in full incl. config (requires nodeId). Read before editing. For code nodes the config reports `hasError`; the large server-computed `transpiled` output is omitted.\n- create: add a node (requires nodeType + config). parentNodeId + mode place it — see the flow-nodes skill.\n- update: change a node\'s config or label (only provided fields change). For switch/lookup nodes, pass a `cases` array to set case values.\n- delete: remove a node.\n\nFor code and xApp HTML nodes, `filePath` can push a node\'s content from a local file instead of inlining it in config — see the `filePath` parameter description.\n- render (read-only): visualize the flow. Returns an `ascii` tree (display inline in any client incl. terminal) and a `mermaid` string. Deliver the mermaid ONLY as a native Mermaid/diagram artifact — do NOT wrap it in HTML or paste it as an inline ```mermaid fence (both break the zoomable, mobile-friendly viewer). Options: focus=<nodeId|nodeId[]> highlights nodes; writeHtml writes a self-contained rich HTML graph to a local tmp file and opens it in the browser (returns htmlUrl/htmlPath — the file is already on the user\'s machine, just hand them the link). See the flow-nodes skill for details.\n\nSupported node types come from the server node registry; an unsupported nodeType returns the current list. For AI Agent tool nodes (knowledge, send_email, mcp, http) use create_tool / update_tool instead.',
     annotations: {
       title: "Manage Flow Nodes",
       readOnlyHint: false,
@@ -820,6 +832,11 @@ After creating, use talk_to_agent to test.`,
         config: {
           type: "object",
           description: "Node-type-specific configuration.",
+        },
+        filePath: {
+          type: "string",
+          description:
+            "LOCAL-ONLY ergonomic (requires the MCP server to have filesystem access to this file, e.g. Claude Code's local npx launch — not available on a remote/server-hosted MCP such as Claude Desktop's connector): absolute path to a local file whose content is read and pushed as the node's single large content field, instead of inlining it in config. Supported only for code nodes (pushes to config.code, must be .js/.ts) and xApp HTML nodes (showXAppHtml → config.html, must be .html). Provide exactly one of the corresponding inline config field (config.code / config.html) or filePath, not both. Lets you maintain the file locally with native write/edit + linting/LSP tooling instead of regenerating the whole content string on every edit.",
         },
         focus: {
           oneOf: [
