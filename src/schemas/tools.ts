@@ -645,3 +645,8 @@ export const auditVoiceAgentSchema = z
     message: "Either aiAgentId or flowId must be provided",
     path: ["aiAgentId"],
   });
+
+// Tool 17: explain
+export const explainSchema = z.object({
+  topic: z.string().optional(),
+});

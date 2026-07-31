@@ -32,6 +32,7 @@ import {
   type VoiceFix,
 } from "./voiceChecklist.js";
 import * as schemas from "../schemas/tools.js";
+import { TOPIC_INDEX, CONTENT } from "./explainTopics.generated.js";
 import {
   chartToAscii,
   chartToMermaid,
@@ -4795,6 +4796,22 @@ export class ToolHandlers {
     };
   }
 
+  // Tool 17: explain
+  handleExplain(args: any): any {
+    const data = schemas.explainSchema.parse(args);
+    const topic = (data.topic || "").trim();
+
+    if (!topic) {
+      return { text: `# Cognigy Plugin Reference Library\n${TOPIC_INDEX}` };
+    }
+    if (topic in CONTENT) {
+      return { text: CONTENT[topic].trim() };
+    }
+    return {
+      text: `Unknown topic: '${topic}'\n\nAvailable topics:\n${TOPIC_INDEX}`,
+    };
+  }
+
   // =========================================================================
   // Main dispatcher
   // =========================================================================
@@ -4853,6 +4870,9 @@ export class ToolHandlers {
           break;
         case "audit_voice_agent":
           result = await this.handleAuditVoiceAgent(args);
+          break;
+        case "explain":
+          result = this.handleExplain(args);
           break;
         default:
           throw new Error(`Unknown tool: ${toolName}`);

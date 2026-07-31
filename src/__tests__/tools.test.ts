@@ -3313,6 +3313,63 @@ describe("audit_voice_agent", () => {
   });
 });
 
+describe("explain", () => {
+  let h: ToolHandlers;
+
+  beforeEach(() => {
+    const api = {
+      get: jest.fn(),
+      post: jest.fn(),
+      patch: jest.fn(),
+      delete: jest.fn(),
+      put: jest.fn(),
+      uploadFile: jest.fn(),
+    } as any;
+    h = new ToolHandlers(
+      api,
+      "https://endpoint-trial.cognigy.ai",
+      "",
+      "https://static-trial.cognigy.ai",
+    );
+  });
+
+  it("no topic returns the top-level index of groups", async () => {
+    const result = await h.handleToolCall("explain", {});
+    expect(typeof result.text).toBe("string");
+    expect(result.text).toContain("Reference Library");
+    expect(result.text).toContain("aiagent");
+    expect(result.text).toContain("platform");
+  });
+
+  it("a known group topic returns its primer plus its topic index", async () => {
+    const result = await h.handleToolCall("explain", { topic: "aiagent" });
+    expect(result.text).toContain("AI Agent");
+    expect(result.text).toContain("Topics in this group");
+  });
+
+  it("a known leaf topic returns its full content", async () => {
+    const result = await h.handleToolCall("explain", {
+      topic: "agent-avatar-image",
+    });
+    expect(result.text).toContain("agent-avatar-image");
+    expect(result.text.toLowerCase()).toContain("avatar");
+  });
+
+  it("an unknown topic returns a helpful error listing valid topics", async () => {
+    const result = await h.handleToolCall("explain", {
+      topic: "not-a-real-topic",
+    });
+    expect(result.text).toContain("Unknown topic: 'not-a-real-topic'");
+    expect(result.text).toContain("Available topics");
+    expect(result.text).toContain("aiagent");
+  });
+
+  it("trims whitespace-only topic to the top-level index", async () => {
+    const result = await h.handleToolCall("explain", { topic: "   " });
+    expect(result.text).toContain("Reference Library");
+  });
+});
+
 // =========================================================================
 // Integration tests (gated)
 // =========================================================================

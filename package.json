@@ -21,6 +21,8 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "build:explain": "node scripts/build-explain-topics.mjs",
+    "check:explain": "node scripts/build-explain-topics.mjs --check",
     "prettier:check": "prettier --check",
     "prettier:write": "prettier --write",
     "lint": "eslint src --ext .ts",

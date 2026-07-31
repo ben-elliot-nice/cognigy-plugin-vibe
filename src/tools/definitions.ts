@@ -1708,4 +1708,35 @@ After creating, use talk_to_agent to test.`,
       },
     },
   },
+
+  // 17. explain
+  {
+    name: "explain",
+    description:
+      "Retrieve implementation guidance before brute-forcing or web-searching — a tiered reference " +
+      "library of hard-won patterns and gotchas (persona authoring, tool design, flow-chart wiring, " +
+      "code node runtime, voice/xApp channel behavior, platform resource shapes) compiled into the " +
+      "server itself, so it's available in every client, not just ones that load skills.\n\n" +
+      "Call explain() with no topic for orientation — lists the top-level topic groups.\n" +
+      'Call explain({ topic: "<group>" }) for that group\'s primer plus an index of its topics.\n' +
+      'Call explain({ topic: "<topic>" }) for the full reference on that specific topic.\n' +
+      "An unknown topic returns the same index so you can pick a valid key.",
+    annotations: {
+      title: "Explain Reference Topic",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        topic: {
+          type: "string",
+          description:
+            'A group key (e.g. "aiagent") or leaf topic key (e.g. "agent-tool-branch"). Omit to get the top-level index of groups.',
+        },
+      },
+    },
+  },
 ];
