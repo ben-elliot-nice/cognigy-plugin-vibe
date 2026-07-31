@@ -299,6 +299,36 @@ For knowledge workflows, the MCP should import the full required source-project 
 in one pass, reuse shared connections only once, and try the imported same-project model
 IDs before falling back to `setup_llm`.
 
+## Development — hot reload
+
+`npm run dev` (`tsx watch src/index.ts`) restarts the process on file changes, but that
+tears down the MCP client's stdio connection — the client has to be restarted to pick the
+server back up. For iterating on tool behavior **inside a live client session**, use the
+dev-only hot-reload supervisor instead:
+
+```bash
+npm run dev:hot   # tsx src/dev/supervisor.ts
+```
+
+Point your MCP client's server command at this instead of `dist/index.js` while developing.
+The supervisor spawns the real server (`src/index.ts`) as a child with `COGNIGY_DEV=1`, which
+exposes one extra tool, `reload_mcp`. Calling `reload_mcp` exits the child with the sentinel
+exit code `RELOAD_EXIT_CODE` (`42`, see `src/dev/constants.ts`); the supervisor sees that exit
+code, respawns a fresh child — picking up any source edits saved to disk — replays the
+`initialize` handshake the client originally sent, and sends
+`notifications/tools/list_changed` so the client refreshes its tool list. The client's stdio
+connection itself is never torn down.
+
+This is entirely dev-only and off by default: `reload_mcp` is only added to the tool list
+when `COGNIGY_DEV=1` is set (`src/tools/devTools.ts`), and the production entry point
+(`src/index.ts` / the published `cognigy-mcp` bin) never spawns the supervisor and is
+byte-for-byte unchanged when `COGNIGY_DEV` is unset.
+
+Known limitation: stdio forwarding between the client and the child is line-based (matching
+the newline-delimited JSON-RPC framing MCP uses over stdio), so a child that writes a partial
+line at the exact moment it exits could lose that fragment. Ported from the Python reference
+implementation's `orchestrator.py` + `tools/dev_tools.py` (rc=42 respawn sentinel).
+
 ## Security
 
 - API keys are passed via environment variables and never logged

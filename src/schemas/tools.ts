@@ -645,3 +645,6 @@ export const auditVoiceAgentSchema = z
     message: "Either aiAgentId or flowId must be provided",
     path: ["aiAgentId"],
   });
+
+// Dev-only tool: reload_mcp
+export const reloadMcpSchema = z.object({});

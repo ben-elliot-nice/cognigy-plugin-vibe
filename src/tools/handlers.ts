@@ -38,6 +38,8 @@ import {
   chartToHtml,
   chartLegend,
 } from "../render/flowRender.js";
+import { RELOAD_EXIT_CODE } from "../dev/constants.js";
+import { isDevModeEnabled } from "./devTools.js";
 
 // The self-contained mermaid UMD build, inlined into rich flow-viz HTML so it
 // renders offline. Copied to dist/assets at build time (scripts/copy-assets.mjs);
@@ -4796,6 +4798,31 @@ export class ToolHandlers {
   }
 
   // =========================================================================
+  // Dev-only: reload_mcp
+  // =========================================================================
+  // Not part of the production surface: only registered in the tool list when
+  // isDevModeEnabled() (COGNIGY_DEV=1, set by src/dev/supervisor.ts). Guarded
+  // here too, in case a client calls it after having cached the tool list, or
+  // calls it directly without going through tools/list.
+  async handleReloadMcp(args: any): Promise<any> {
+    schemas.reloadMcpSchema.parse(args ?? {});
+    if (!isDevModeEnabled()) {
+      throw new Error(
+        "reload_mcp is a dev-only tool. Run the server under the dev supervisor " +
+          "(src/dev/supervisor.ts) to enable it.",
+      );
+    }
+    // Delay the exit slightly so this tool result reaches the client before the
+    // process disappears. The dev supervisor watches for RELOAD_EXIT_CODE and
+    // respawns a fresh server process, re-reading the current source from disk.
+    setTimeout(() => process.exit(RELOAD_EXIT_CODE), 250);
+    return {
+      message:
+        "Reloading MCP server from local source. Tool list will refresh momentarily.",
+    };
+  }
+
+  // =========================================================================
   // Main dispatcher
   // =========================================================================
   async handleToolCall(toolName: string, args: any): Promise<any> {
@@ -4853,6 +4880,9 @@ export class ToolHandlers {
           break;
         case "audit_voice_agent":
           result = await this.handleAuditVoiceAgent(args);
+          break;
+        case "reload_mcp":
+          result = await this.handleReloadMcp(args);
           break;
         default:
           throw new Error(`Unknown tool: ${toolName}`);
