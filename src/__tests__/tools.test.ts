@@ -1939,6 +1939,50 @@ describe("ToolHandlers v2", () => {
       expect(api.patch).toHaveBeenCalledTimes(1);
       expect(api.patch.mock.calls[0][1].config.code).toBe("v2 forced");
     });
+
+    it("blocks the first update when the node was edited in the UI right after create (no clobber window)", async () => {
+      const newCodeNodeId = "60d5ec49f1a2c8b1a4e0f014";
+      const parentNodeId = "60d5ec49f1a2c8b1a4e0f015";
+
+      // Create the node — a baseline snapshot of what was pushed ("v1")
+      // must be recorded immediately, before any `update` call happens.
+      api.post.mockResolvedValueOnce({
+        _id: newCodeNodeId,
+        parentId: parentNodeId,
+      });
+
+      const createResult = await h.handleToolCall("manage_flow_nodes", {
+        operation: "create",
+        flowId: ID.flow,
+        parentNodeId,
+        nodeType: "code",
+        label: "New Code Node",
+        config: { code: "v1" },
+      });
+      expect(createResult.nodeId).toBe(newCodeNodeId);
+
+      // Someone edits the node in the Cognigy UI before the agent's first
+      // `update` call — remote no longer matches what create just pushed.
+      api.get.mockResolvedValueOnce({
+        _id: newCodeNodeId,
+        type: "code",
+        config: { code: "edited in the UI right after create" },
+      });
+      api.patch.mockClear();
+
+      const updateResult = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: newCodeNodeId,
+        config: { code: "v2 from agent" },
+      });
+
+      expect(updateResult.conflict).toBe(true);
+      expect(updateResult.diff).toContain(
+        "edited in the UI right after create",
+      );
+      expect(api.patch).not.toHaveBeenCalled();
+    });
   });
 
   // =========================================================================
@@ -3173,7 +3217,16 @@ describe("audit_voice_agent", () => {
       put: jest.fn(),
       uploadFile: jest.fn(),
     } as any;
-    h = new ToolHandlers(api, "https://endpoint-trial.cognigy.ai");
+    h = new ToolHandlers(
+      api,
+      "https://endpoint-trial.cognigy.ai",
+      "",
+      "",
+      join(
+        mkdtempSync(join(tmpdir(), "cognigy-snap-")),
+        `${randomUUID()}.json`,
+      ),
+    );
   });
 
   const START_ID = "60d5ec49f1a2c8b1a4e0f0aa";

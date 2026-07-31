@@ -1,6 +1,19 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
+import { mkdtempSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { randomUUID } from "crypto";
 import { CognigyApiClient } from "../api/client.js";
 import { ToolHandlers } from "../tools/handlers.js";
+
+// Isolated per-test snapshot store path — never touch a real machine's
+// ~/.cognigy-plugin write-conflict snapshot file (see writeConflict.test.ts).
+function isolatedSnapshotPath(): string {
+  return join(
+    mkdtempSync(join(tmpdir(), "cognigy-snap-")),
+    `${randomUUID()}.json`,
+  );
+}
 
 const ID = {
   project: "507f1f77bcf86cd799439011",
@@ -36,7 +49,13 @@ describe("create_tool – HTTP tool path", () => {
       delete: jest.fn(),
       put: jest.fn(),
     } as any;
-    h = new ToolHandlers(api, "https://endpoint-trial.cognigy.ai");
+    h = new ToolHandlers(
+      api,
+      "https://endpoint-trial.cognigy.ai",
+      "",
+      "",
+      isolatedSnapshotPath(),
+    );
   });
 
   function mockFlowWithJobNode() {
@@ -386,7 +405,13 @@ describe("update_tool – HTTP child-node resolution", () => {
       delete: jest.fn(),
       put: jest.fn(),
     } as any;
-    h = new ToolHandlers(api, "https://endpoint-trial.cognigy.ai");
+    h = new ToolHandlers(
+      api,
+      "https://endpoint-trial.cognigy.ai",
+      "",
+      "",
+      isolatedSnapshotPath(),
+    );
   });
 
   // Real /chart/nodes responses do NOT include parentId on nodes — the tree

@@ -434,13 +434,15 @@ function getConflictFieldSpec(nodeType: string): ConflictFieldSpec | null {
     case "aiAgentJobTool":
       return {
         field: "tool",
+        // No `condition` field here: unlike the Python reference's
+        // `.tool.json` convention, this codebase's create/update schemas
+        // (src/schemas/tools.ts) don't have one for tool nodes.
         extract: (config) =>
           JSON.stringify(
             {
               toolId: config?.toolId ?? "",
               description: config?.description ?? "",
               parameters: config?.parameters ?? "",
-              condition: config?.condition ?? "",
             },
             null,
             2,
@@ -3570,6 +3572,22 @@ export class ToolHandlers {
           createdNode.parent_id ??
           (createdNode.parent &&
             (createdNode.parent._id || createdNode.parent.id));
+
+        // Record a baseline snapshot immediately for node types write-conflict
+        // detection covers, keyed the same way `update` expects. Without
+        // this, a UI edit made between this create and the node's first
+        // `update` call would be silently clobbered — the exact bug class
+        // this feature exists to prevent (see getConflictFieldSpec).
+        if (nodeId) {
+          const createConflictSpec = getConflictFieldSpec(entry.type);
+          if (createConflictSpec) {
+            recordSnapshot(
+              this.snapshotStore,
+              snapshotKey(flowId, nodeId, createConflictSpec.field),
+              createConflictSpec.extract(apiConfig ?? {}),
+            );
+          }
+        }
 
         const result = {
           nodeId,

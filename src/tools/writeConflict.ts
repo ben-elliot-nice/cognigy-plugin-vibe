@@ -21,10 +21,13 @@
  */
 import { createHash } from "crypto";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "fs";
 import { dirname, join } from "path";
@@ -59,25 +62,47 @@ export function snapshotKey(
 }
 
 /**
- * JSON-file-backed store of "last pushed content" snapshots, keyed by an
- * opaque string key (see `snapshotKey`). Read-modify-write with a
- * write-then-rename to avoid partial writes; missing/malformed files are
- * treated as empty rather than throwing, since a corrupt cache must never
- * block a real write.
+ * Every key lives in one shared JSON file (rather than the reference
+ * implementation's one-file-per-node layout). That's a deliberate
+ * simplification for a single MCP server process, but it does mean a naive
+ * read-modify-write could lose an update if two writes to *different* keys
+ * race: within one Node process, synchronous fs calls with no `await` inside
+ * `set()` already make each read-modify-write atomic with respect to other
+ * JS running in that process, but a user can have more than one MCP server
+ * process alive at once (e.g. two concurrent Claude Code sessions), and
+ * across processes that guarantee doesn't hold. `set()` therefore wraps its
+ * read-modify-write in a lock file (atomic `open(..., "wx")`), so a second
+ * process's write waits for the first to finish instead of clobbering it.
+ * Missing/malformed store files are treated as empty rather than throwing,
+ * since a corrupt cache must never block a real write — but the loss of
+ * protection is logged to stderr so it isn't silent.
  */
 export class SnapshotStore {
   constructor(
     private readonly filePath: string = DEFAULT_SNAPSHOT_STORE_PATH,
+    /** Stale-lock steal timeout; injectable so tests don't wait 2s. */
+    private readonly lockTimeoutMs: number = 2000,
   ) {}
 
   private readAll(): Record<string, SnapshotEntry> {
     try {
-      const parsed: unknown = JSON.parse(readFileSync(this.filePath, "utf-8"));
+      const raw = readFileSync(this.filePath, "utf-8");
+      const parsed: unknown = JSON.parse(raw);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         return parsed as Record<string, SnapshotEntry>;
       }
-    } catch {
-      // Missing or malformed — behave as if nothing was ever snapshotted.
+    } catch (err: any) {
+      // Missing file is normal (nothing snapshotted yet). A malformed file
+      // (parse error, or valid-but-wrong-shape JSON) is not — behave as if
+      // nothing was ever snapshotted, but say so, since every previously
+      // tracked node silently loses conflict protection at once.
+      if (err?.code !== "ENOENT") {
+        console.error(
+          `[cognigy-plugin] write-conflict snapshot store at ${this.filePath} is unreadable/corrupt ` +
+            `(${err?.message ?? err}); treating it as empty. Conflict detection for previously-tracked ` +
+            "nodes is reset until their next write.",
+        );
+      }
     }
     return {};
   }
@@ -93,18 +118,63 @@ export class SnapshotStore {
     renameSync(tmp, this.filePath);
   }
 
+  /**
+   * Cross-process advisory lock around a read-modify-write, using an
+   * atomically-created lock directory as the mutex (`mkdirSync` either
+   * succeeds exclusively or throws `EEXIST`). Steals stale locks left by a
+   * crashed process after `timeoutMs` rather than deadlocking forever.
+   */
+  private withLock<T>(fn: () => T): T {
+    const lockPath = `${this.filePath}.lock`;
+    mkdirSync(dirname(this.filePath), { recursive: true, mode: 0o700 });
+    const start = Date.now();
+    for (;;) {
+      try {
+        const fd = openSync(lockPath, "wx");
+        closeSync(fd);
+        break;
+      } catch (err: any) {
+        if (err?.code !== "EEXIST") throw err;
+        if (Date.now() - start > this.lockTimeoutMs) {
+          // Stale lock (owning process crashed/was killed) — steal it
+          // rather than block forever.
+          try {
+            unlinkSync(lockPath);
+          } catch {
+            // Another process already cleaned it up — loop and retry.
+          }
+          continue;
+        }
+        // Synchronous API precludes an async sleep; spin briefly. Store
+        // writes are rare (one per node create/update) and fast, so the
+        // contention window is short.
+      }
+    }
+    try {
+      return fn();
+    } finally {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // Already removed (e.g. stolen by a timed-out waiter) — fine.
+      }
+    }
+  }
+
   get(key: string): SnapshotEntry | undefined {
     return this.readAll()[key];
   }
 
   set(key: string, content: string): void {
-    const data = this.readAll();
-    data[key] = {
-      hash: hashContent(content),
-      content,
-      updatedAt: new Date().toISOString(),
-    };
-    this.writeAll(data);
+    this.withLock(() => {
+      const data = this.readAll();
+      data[key] = {
+        hash: hashContent(content),
+        content,
+        updatedAt: new Date().toISOString(),
+      };
+      this.writeAll(data);
+    });
   }
 
   /** Only used by tests that want to assert on the on-disk file directly. */

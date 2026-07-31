@@ -102,6 +102,39 @@ describe("writeConflict", () => {
       const parsed = JSON.parse(raw);
       expect(parsed["flow-1:node-1:code"].content).toBe("x");
     });
+
+    it("releases its lock file after a successful set()", () => {
+      store.set("flow-1:node-1:code", "x");
+      expect(existsSync(`${storePath}.lock`)).toBe(false);
+    });
+
+    it("steals a stale lock left by a crashed process rather than hanging forever", () => {
+      // Simulate another process that acquired the lock and died before
+      // releasing it: create the lock file directly (bypassing the store's
+      // own withLock), then use a near-zero steal timeout so this test
+      // doesn't need to sleep for the real 2s default.
+      writeFileSync(`${storePath}.lock`, "");
+      const impatientStore = new SnapshotStore(storePath, 0);
+
+      // Despite the pre-existing lock, set() must still complete (steals the
+      // stale lock rather than deadlocking) and leave no lock file behind.
+      impatientStore.set("flow-1:node-1:code", "recovered after stale lock");
+      expect(impatientStore.get("flow-1:node-1:code")?.content).toBe(
+        "recovered after stale lock",
+      );
+      expect(existsSync(`${storePath}.lock`)).toBe(false);
+    });
+
+    it("does not lose an unrelated key that was written while this write's lock was briefly held", () => {
+      // Two sequential set() calls to different keys, each individually
+      // guarded by the lock, must both survive (regression test for the
+      // shared-file lost-update race raised in review: a read-modify-write
+      // to key B must never clobber a just-written key A).
+      store.set("flow-1:node-1:code", "a");
+      store.set("flow-1:node-2:code", "b");
+      expect(store.get("flow-1:node-1:code")?.content).toBe("a");
+      expect(store.get("flow-1:node-2:code")?.content).toBe("b");
+    });
   });
 
   describe("checkWriteConflict", () => {
