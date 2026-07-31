@@ -41,6 +41,11 @@ const PACKAGE_VERSION = getPackageVersion();
  * Normalise the API base URL so it always points to the API host.
  * Users may supply the bare UI URL (e.g. https://dev.cognigy.ai) instead of the
  * API URL (https://api-dev.cognigy.ai).  We detect this and prepend "api-".
+ *
+ * NiCE CXone hosts (e.g. https://cognigy-api-au1.nicecxone.com) already carry
+ * the "api-" label and don't end in ".cognigy.ai", so the condition below
+ * leaves them untouched (tolerated, not mangled) rather than double-prefixing
+ * them or misidentifying them as a bare UI URL.
  */
 function normalizeApiBaseUrl(raw: string): string {
   try {
@@ -59,54 +64,67 @@ function normalizeApiBaseUrl(raw: string): string {
 }
 
 /**
- * Derive the endpoint base URL from the API base URL.
- * Pattern: https://api-{env}.cognigy.ai -> https://endpoint-{env}.cognigy.ai
+ * Match the "api-" hostname label regardless of any leading subdomain
+ * prefix, so both plain Cognigy SaaS hosts and NiCE CXone hosts resolve:
+ *   api-{env}.cognigy.ai            (prefix "")
+ *   cognigy-api-{env}.nicecxone.com (prefix "cognigy-")
+ * The lookbehind-free form below requires "api-" to sit at the start of the
+ * hostname or immediately after a hyphen, so it won't misfire on unrelated
+ * substrings like "myapi-foo.example.com".
  */
-function deriveEndpointBaseUrl(apiBaseUrl: string): string {
+const API_HOSTNAME_LABEL = /^(.*-)?api-(.+)$/;
+
+/**
+ * Derive a sibling base URL from the API base URL by swapping the "api-"
+ * hostname label for `targetLabel`, preserving any subdomain prefix before
+ * it (e.g. the "cognigy-" in NiCE CXone hosts).
+ *
+ * Examples:
+ *   https://api-{env}.cognigy.ai            -> https://{targetLabel}-{env}.cognigy.ai
+ *   https://cognigy-api-{env}.nicecxone.com -> https://cognigy-{targetLabel}-{env}.nicecxone.com
+ */
+function deriveSiblingBaseUrl(apiBaseUrl: string, targetLabel: string): string {
   try {
     const url = new URL(apiBaseUrl);
-    const match = url.hostname.match(/^api-(.+)$/);
+    const match = url.hostname.match(API_HOSTNAME_LABEL);
     if (match) {
-      return `${url.protocol}//endpoint-${match[1]}`;
+      const prefix = match[1] ?? "";
+      return `${url.protocol}//${prefix}${targetLabel}-${match[2]}`;
     }
   } catch {
     // fall through
   }
-  return apiBaseUrl.replace(/\/api-/, "/endpoint-");
+  return apiBaseUrl.replace(/\/(.*-)?api-/, `/$1${targetLabel}-`);
+}
+
+/**
+ * Derive the endpoint base URL from the API base URL.
+ * Pattern: https://api-{env}.cognigy.ai -> https://endpoint-{env}.cognigy.ai
+ * Also handles NiCE CXone hosts: https://cognigy-api-{env}.nicecxone.com ->
+ * https://cognigy-endpoint-{env}.nicecxone.com
+ */
+function deriveEndpointBaseUrl(apiBaseUrl: string): string {
+  return deriveSiblingBaseUrl(apiBaseUrl, "endpoint");
 }
 
 /**
  * Derive the static-files base URL from the API base URL.
  * Pattern: https://api-{env}.cognigy.ai -> https://static-{env}.cognigy.ai
+ * Also handles NiCE CXone hosts: https://cognigy-api-{env}.nicecxone.com ->
+ * https://cognigy-static-{env}.nicecxone.com
  */
 function deriveStaticFilesBaseUrl(apiBaseUrl: string): string {
-  try {
-    const url = new URL(apiBaseUrl);
-    const match = url.hostname.match(/^api-(.+)$/);
-    if (match) {
-      return `${url.protocol}//static-${match[1]}`;
-    }
-  } catch {
-    // fall through
-  }
-  return apiBaseUrl.replace(/\/api-/, "/static-");
+  return deriveSiblingBaseUrl(apiBaseUrl, "static");
 }
 
 /**
  * Derive the webchat demo base URL from the API base URL.
  * Pattern: https://api-{env}.cognigy.ai -> https://webchat-{env}.cognigy.ai
+ * Also handles NiCE CXone hosts: https://cognigy-api-{env}.nicecxone.com ->
+ * https://cognigy-webchat-{env}.nicecxone.com
  */
 function deriveWebchatBaseUrl(apiBaseUrl: string): string {
-  try {
-    const url = new URL(apiBaseUrl);
-    const match = url.hostname.match(/^api-(.+)$/);
-    if (match) {
-      return `${url.protocol}//webchat-${match[1]}`;
-    }
-  } catch {
-    // fall through
-  }
-  return apiBaseUrl.replace(/\/api-/, "/webchat-");
+  return deriveSiblingBaseUrl(apiBaseUrl, "webchat");
 }
 
 const VALID_LOG_LEVELS = new Set<string>(["debug", "info", "warn", "error"]);

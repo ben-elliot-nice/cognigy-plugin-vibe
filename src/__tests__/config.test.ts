@@ -167,6 +167,83 @@ describe("loadConfig", () => {
     expect(config.rateLimit.windowMs).toBe(60000);
   });
 
+  it("derives static files URL from API URL", () => {
+    process.env.COGNIGY_API_BASE_URL = "https://api-trial.cognigy.ai";
+    process.env.COGNIGY_API_KEY = "test-key";
+    const config = loadConfig();
+    expect(config.staticFilesBaseUrl).toBe("https://static-trial.cognigy.ai");
+  });
+
+  describe("NiCE CXone hosts (cognigy-api-{env}.nicecxone.com)", () => {
+    it("keeps the API URL unchanged (already has the api- label)", () => {
+      process.env.COGNIGY_API_BASE_URL =
+        "https://cognigy-api-au1.nicecxone.com";
+      process.env.COGNIGY_API_KEY = "test-key";
+      const config = loadConfig();
+      expect(config.apiBaseUrl).toBe("https://cognigy-api-au1.nicecxone.com");
+    });
+
+    it("derives the endpoint URL, preserving the cognigy- prefix", () => {
+      process.env.COGNIGY_API_BASE_URL =
+        "https://cognigy-api-au1.nicecxone.com";
+      process.env.COGNIGY_API_KEY = "test-key";
+      const config = loadConfig();
+      expect(config.endpointBaseUrl).toBe(
+        "https://cognigy-endpoint-au1.nicecxone.com",
+      );
+    });
+
+    it("derives the webchat URL, preserving the cognigy- prefix", () => {
+      process.env.COGNIGY_API_BASE_URL =
+        "https://cognigy-api-au1.nicecxone.com";
+      process.env.COGNIGY_API_KEY = "test-key";
+      const config = loadConfig();
+      expect(config.webchatBaseUrl).toBe(
+        "https://cognigy-webchat-au1.nicecxone.com",
+      );
+    });
+
+    it("derives the static files URL, preserving the cognigy- prefix", () => {
+      process.env.COGNIGY_API_BASE_URL =
+        "https://cognigy-api-au1.nicecxone.com";
+      process.env.COGNIGY_API_KEY = "test-key";
+      const config = loadConfig();
+      expect(config.staticFilesBaseUrl).toBe(
+        "https://cognigy-static-au1.nicecxone.com",
+      );
+    });
+
+    it("regression: the OLD ^api-(.+)$ hostname match would silently pass the API host through unchanged", () => {
+      // This reproduces the pre-fix regex (src/config.ts:65-68 before the fix)
+      // to prove why the bug was silent rather than throwing: the char before
+      // "api-" in "cognigy-api-au1.nicecxone.com" is "-", not start-of-host,
+      // so `^api-(.+)$` never matches and the function fell through to
+      // returning the *API* host as the "derived" endpoint host.
+      const oldDerive = (apiBaseUrl: string): string => {
+        const url = new URL(apiBaseUrl);
+        const match = url.hostname.match(/^api-(.+)$/);
+        if (match) {
+          return `${url.protocol}//endpoint-${match[1]}`;
+        }
+        return apiBaseUrl.replace(/\/api-/, "/endpoint-");
+      };
+      const wronglyUnchanged = oldDerive(
+        "https://cognigy-api-au1.nicecxone.com",
+      );
+      expect(wronglyUnchanged).toBe("https://cognigy-api-au1.nicecxone.com");
+
+      // The fixed implementation must NOT reproduce this passthrough.
+      process.env.COGNIGY_API_BASE_URL =
+        "https://cognigy-api-au1.nicecxone.com";
+      process.env.COGNIGY_API_KEY = "test-key";
+      const config = loadConfig();
+      expect(config.endpointBaseUrl).not.toBe(config.apiBaseUrl);
+      expect(config.endpointBaseUrl).toBe(
+        "https://cognigy-endpoint-au1.nicecxone.com",
+      );
+    });
+  });
+
   describe("on-disk fallback (setup CLI)", () => {
     it("does not read the fallback file when both env vars are set", () => {
       process.env.COGNIGY_API_BASE_URL = "https://api-dev.cognigy.ai";
