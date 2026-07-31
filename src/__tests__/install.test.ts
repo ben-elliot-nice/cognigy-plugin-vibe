@@ -403,4 +403,15 @@ describe("parseSubcommand", () => {
   it("returns an unknown non-flag word verbatim (so main can reject it)", () => {
     expect(parseSubcommand(["bogus"])).toEqual({ sub: "bogus", rest: [] });
   });
+
+  it("keeps `status --fix` and `update --check` flags in rest", () => {
+    expect(parseSubcommand(["status", "--fix"])).toEqual({
+      sub: "status",
+      rest: ["--fix"],
+    });
+    expect(parseSubcommand(["update", "--check"])).toEqual({
+      sub: "update",
+      rest: ["--check"],
+    });
+  });
 });

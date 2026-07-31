@@ -27,9 +27,8 @@ jest.unstable_mockModule("../install/desktopLauncher.js", () => ({
   writeDesktopLauncher: () => join(FAKE_HOME, "desktop-launch.mjs"),
 }));
 
-const { installClaudeDesktop, ENGINE_PREFIX } = await import(
-  "../install/claudeDesktop.js"
-);
+const { installClaudeDesktop, installDesktopEngine, ENGINE_PREFIX } =
+  await import("../install/claudeDesktop.js");
 
 const tmpDirs: string[] = [FAKE_HOME];
 function freshConfigPath(): string {
@@ -105,5 +104,26 @@ describe("installClaudeDesktop", () => {
     expect(() => installClaudeDesktop(CREDS, freshConfigPath())).toThrow(
       /Failed to install/,
     );
+  });
+});
+
+describe("installDesktopEngine", () => {
+  it("installs the pinned version into the per-user prefix", () => {
+    installDesktopEngine("1.7.0");
+    const args = (runNpm.mock.calls.at(-1) as unknown as [string[]])[0];
+    expect(args).toContain("install");
+    expect(args).toContain("@cognigy/plugin-engine@1.7.0");
+    expect(args).toContain(ENGINE_PREFIX);
+  });
+
+  it("defaults to @latest", () => {
+    installDesktopEngine();
+    const args = (runNpm.mock.calls.at(-1) as unknown as [string[]])[0];
+    expect(args).toContain("@cognigy/plugin-engine@latest");
+  });
+
+  it("throws when the install fails", () => {
+    runNpm.mockReturnValueOnce({ status: 1, error: undefined });
+    expect(() => installDesktopEngine("1.7.0")).toThrow(/Failed to install/);
   });
 });
