@@ -1,5 +1,12 @@
-import { describe, it, expect, beforeEach, jest } from "@jest/globals";
-import { mkdtempSync, readFileSync, writeFileSync } from "fs";
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  afterEach,
+  jest,
+} from "@jest/globals";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Readable } from "stream";
@@ -1306,6 +1313,258 @@ describe("ToolHandlers v2", () => {
       );
     });
 
+    describe("parametersFilePath", () => {
+      let dir: string;
+
+      beforeEach(() => {
+        dir = mkdtempSync(join(tmpdir(), "cognigy-mcp-tool-params-"));
+      });
+
+      afterEach(() => {
+        rmSync(dir, { recursive: true, force: true });
+      });
+
+      it("reads config.parameters from a local JSON file", async () => {
+        const file = join(dir, "params.json");
+        writeFileSync(
+          file,
+          '{"type":"object","properties":{"q":{"type":"string"}}}',
+          "utf-8",
+        );
+        mockFlowWithJobNode();
+        api.post.mockResolvedValue({ _id: ID.tool });
+
+        await h.handleToolCall("create_tool", {
+          aiAgentId: ID.agent,
+          toolType: "tool",
+          name: "Parameterized",
+          config: { toolId: "my_tool", description: "desc" },
+          parametersFilePath: file,
+        });
+
+        expect(api.post).toHaveBeenCalledWith(
+          expect.stringContaining("/chart/nodes"),
+          expect.objectContaining({
+            config: expect.objectContaining({
+              useParameters: true,
+              parameters:
+                '{"type":"object","properties":{"q":{"type":"string"}}}',
+            }),
+          }),
+        );
+      });
+
+      it("errors when the parameters file is invalid JSON", async () => {
+        const file = join(dir, "bad.json");
+        writeFileSync(file, "{not valid json", "utf-8");
+        mockFlowWithJobNode();
+
+        const result = await h.handleToolCall("create_tool", {
+          aiAgentId: ID.agent,
+          toolType: "tool",
+          name: "Parameterized",
+          config: { toolId: "my_tool", description: "desc" },
+          parametersFilePath: file,
+        });
+
+        expect(result.error).toMatch(/Invalid JSON/);
+        expect(api.post).not.toHaveBeenCalled();
+      });
+
+      it("rejects both config.parameters and parametersFilePath", async () => {
+        const file = join(dir, "params.json");
+        writeFileSync(file, '{"type":"object"}', "utf-8");
+        mockFlowWithJobNode();
+
+        const result = await h.handleToolCall("create_tool", {
+          aiAgentId: ID.agent,
+          toolType: "tool",
+          name: "Parameterized",
+          config: {
+            toolId: "my_tool",
+            description: "desc",
+            parameters: '{"type":"object"}',
+          },
+          parametersFilePath: file,
+        });
+
+        expect(result.error).toMatch(/exactly one/i);
+        expect(api.post).not.toHaveBeenCalled();
+      });
+
+      it("returns a clear error when the parameters file does not exist", async () => {
+        mockFlowWithJobNode();
+
+        const result = await h.handleToolCall("create_tool", {
+          aiAgentId: ID.agent,
+          toolType: "tool",
+          name: "Parameterized",
+          config: { toolId: "my_tool", description: "desc" },
+          parametersFilePath: join(dir, "missing.json"),
+        });
+
+        expect(result.error).toMatch(/File not found/);
+        expect(api.post).not.toHaveBeenCalled();
+      });
+
+      it("update_tool reads config.parameters from a local JSON file", async () => {
+        const file = join(dir, "params.json");
+        writeFileSync(file, '{"type":"object"}', "utf-8");
+        api.get
+          .mockResolvedValueOnce({ flowId: ID.flow })
+          .mockResolvedValueOnce({
+            items: [{ _id: ID.tool, type: "aiAgentJobTool", label: "my_tool" }],
+          });
+        api.patch.mockResolvedValueOnce({ _id: ID.tool });
+
+        const result = await h.handleToolCall("update_tool", {
+          aiAgentId: ID.agent,
+          toolNodeId: ID.tool,
+          toolType: "tool",
+          parametersFilePath: file,
+        });
+
+        expect(result.updatedFields).toContain("config");
+        expect(api.patch).toHaveBeenCalledWith(
+          expect.stringContaining(`/chart/nodes/${ID.tool}`),
+          expect.objectContaining({
+            config: expect.objectContaining({
+              useParameters: true,
+              parameters: '{"type":"object"}',
+            }),
+          }),
+        );
+      });
+
+      it("update_tool rejects both config.parameters and parametersFilePath", async () => {
+        const file = join(dir, "params.json");
+        writeFileSync(file, '{"type":"object"}', "utf-8");
+        api.get
+          .mockResolvedValueOnce({ flowId: ID.flow })
+          .mockResolvedValueOnce({
+            items: [{ _id: ID.tool, type: "aiAgentJobTool", label: "my_tool" }],
+          });
+
+        const result = await h.handleToolCall("update_tool", {
+          aiAgentId: ID.agent,
+          toolNodeId: ID.tool,
+          toolType: "tool",
+          config: { parameters: '{"type":"object"}' },
+          parametersFilePath: file,
+        });
+
+        expect(result.error).toMatch(/exactly one/i);
+        expect(api.patch).not.toHaveBeenCalled();
+      });
+
+      it("update_tool returns a clear error when the parameters file does not exist", async () => {
+        api.get
+          .mockResolvedValueOnce({ flowId: ID.flow })
+          .mockResolvedValueOnce({
+            items: [{ _id: ID.tool, type: "aiAgentJobTool", label: "my_tool" }],
+          });
+
+        const result = await h.handleToolCall("update_tool", {
+          aiAgentId: ID.agent,
+          toolNodeId: ID.tool,
+          toolType: "tool",
+          parametersFilePath: join(dir, "missing.json"),
+        });
+
+        expect(result.error).toMatch(/File not found/);
+        expect(api.patch).not.toHaveBeenCalled();
+      });
+
+      it("update_tool errors when the parameters file is invalid JSON", async () => {
+        const file = join(dir, "bad.json");
+        writeFileSync(file, "{not valid json", "utf-8");
+        api.get
+          .mockResolvedValueOnce({ flowId: ID.flow })
+          .mockResolvedValueOnce({
+            items: [{ _id: ID.tool, type: "aiAgentJobTool", label: "my_tool" }],
+          });
+
+        const result = await h.handleToolCall("update_tool", {
+          aiAgentId: ID.agent,
+          toolNodeId: ID.tool,
+          toolType: "tool",
+          parametersFilePath: file,
+        });
+
+        expect(result.error).toMatch(/Invalid JSON/);
+        expect(api.patch).not.toHaveBeenCalled();
+      });
+
+      it("rejects a parameters file that parses to a non-object (array) on create_tool", async () => {
+        const file = join(dir, "array.json");
+        writeFileSync(file, "[1,2,3]", "utf-8");
+        mockFlowWithJobNode();
+
+        const result = await h.handleToolCall("create_tool", {
+          aiAgentId: ID.agent,
+          toolType: "tool",
+          name: "Parameterized",
+          config: { toolId: "my_tool", description: "desc" },
+          parametersFilePath: file,
+        });
+
+        expect(result.error).toMatch(/expected a JSON object/i);
+        expect(api.post).not.toHaveBeenCalled();
+      });
+
+      it("rejects a parameters file that parses to a scalar (number) on create_tool", async () => {
+        const file = join(dir, "scalar.json");
+        writeFileSync(file, "42", "utf-8");
+        mockFlowWithJobNode();
+
+        const result = await h.handleToolCall("create_tool", {
+          aiAgentId: ID.agent,
+          toolType: "tool",
+          name: "Parameterized",
+          config: { toolId: "my_tool", description: "desc" },
+          parametersFilePath: file,
+        });
+
+        expect(result.error).toMatch(/expected a JSON object/i);
+        expect(api.post).not.toHaveBeenCalled();
+      });
+
+      it("update_tool rejects a parameters file that parses to a non-object (array)", async () => {
+        const file = join(dir, "array.json");
+        writeFileSync(file, "[1,2,3]", "utf-8");
+        api.get
+          .mockResolvedValueOnce({ flowId: ID.flow })
+          .mockResolvedValueOnce({
+            items: [{ _id: ID.tool, type: "aiAgentJobTool", label: "my_tool" }],
+          });
+
+        const result = await h.handleToolCall("update_tool", {
+          aiAgentId: ID.agent,
+          toolNodeId: ID.tool,
+          toolType: "tool",
+          parametersFilePath: file,
+        });
+
+        expect(result.error).toMatch(/expected a JSON object/i);
+        expect(api.patch).not.toHaveBeenCalled();
+      });
+
+      it("rejects a relative parametersFilePath even if the file exists", async () => {
+        mockFlowWithJobNode();
+
+        const result = await h.handleToolCall("create_tool", {
+          aiAgentId: ID.agent,
+          toolType: "tool",
+          name: "Parameterized",
+          config: { toolId: "my_tool", description: "desc" },
+          parametersFilePath: "relative/params.json",
+        });
+
+        expect(result.error).toMatch(/absolute path/i);
+        expect(api.post).not.toHaveBeenCalled();
+      });
+    });
+
     it("returns error when agent has no flow", async () => {
       api.get
         .mockResolvedValueOnce({ _id: ID.agent, name: "Orphan Agent" })
@@ -1923,6 +2182,292 @@ describe("ToolHandlers v2", () => {
       expect(patchBody.config).not.toHaveProperty("transpiled");
       expect(patchBody.config).not.toHaveProperty("hasError");
       expect(patchBody.config.code).toBe("input.ok = 1;");
+    });
+  });
+
+  // =========================================================================
+  // manage_flow_nodes — filePath push
+  // =========================================================================
+  describe("manage_flow_nodes — filePath push", () => {
+    let dir: string;
+
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), "cognigy-mcp-file-push-"));
+    });
+
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("creates a code node by reading content from a local file", async () => {
+      const file = join(dir, "node.js");
+      writeFileSync(file, "input.result = 42;", "utf-8");
+      api.post.mockResolvedValueOnce({
+        _id: "60d5ec49f1a2c8b1a4e0f0aa",
+        parentId: ID.tool,
+      });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "create",
+        flowId: ID.flow,
+        parentNodeId: ID.tool,
+        mode: "appendChild",
+        nodeType: "code",
+        label: "Compute",
+        filePath: file,
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(api.post).toHaveBeenCalledWith(
+        expect.stringContaining("/chart/nodes"),
+        expect.objectContaining({
+          type: "code",
+          config: { code: "input.result = 42;" },
+        }),
+      );
+    });
+
+    it("updates a code node's config.code from a local file", async () => {
+      const codeNodeId = "60d5ec49f1a2c8b1a4e0f012";
+      const file = join(dir, "node.js");
+      writeFileSync(file, "input.result = 99;", "utf-8");
+
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "old" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        filePath: file,
+      });
+
+      expect(result.updated).toBe(true);
+      expect(result.configUpdated).toContain("code");
+      const patchBody = api.patch.mock.calls[0][1] as any;
+      expect(patchBody.config.code).toBe("input.result = 99;");
+    });
+
+    it("updates an xApp HTML node's config.html from a local file", async () => {
+      const htmlNodeId = "60d5ec49f1a2c8b1a4e0f013";
+      const file = join(dir, "app.html");
+      writeFileSync(file, "<h1>Hello</h1>", "utf-8");
+
+      api.get.mockResolvedValueOnce({
+        _id: htmlNodeId,
+        type: "setHTMLAppState",
+        config: { html: "<p>old</p>" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: htmlNodeId });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: htmlNodeId,
+        filePath: file,
+      });
+
+      expect(result.updated).toBe(true);
+      const patchBody = api.patch.mock.calls[0][1] as any;
+      expect(patchBody.config.html).toBe("<h1>Hello</h1>");
+    });
+
+    it("returns a clear error when the file does not exist", async () => {
+      const codeNodeId = "60d5ec49f1a2c8b1a4e0f012";
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: {},
+      });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        filePath: join(dir, "missing.js"),
+      });
+
+      expect(result.error).toMatch(/File not found/);
+      expect(api.patch).not.toHaveBeenCalled();
+    });
+
+    it("rejects both inline config.code and filePath on create", async () => {
+      const file = join(dir, "node.js");
+      writeFileSync(file, "input.result = 1;", "utf-8");
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "create",
+        flowId: ID.flow,
+        parentNodeId: ID.tool,
+        mode: "appendChild",
+        nodeType: "code",
+        label: "Compute",
+        config: { code: "input.result = 2;" },
+        filePath: file,
+      });
+
+      expect(result.error).toMatch(/exactly one/i);
+      expect(api.post).not.toHaveBeenCalled();
+    });
+
+    it("rejects both inline config.code and filePath on update", async () => {
+      const codeNodeId = "60d5ec49f1a2c8b1a4e0f012";
+      const file = join(dir, "node.js");
+      writeFileSync(file, "input.result = 1;", "utf-8");
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "old" },
+      });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "input.result = 2;" },
+        filePath: file,
+      });
+
+      expect(result.error).toMatch(/exactly one/i);
+      expect(api.patch).not.toHaveBeenCalled();
+    });
+
+    it("reports missing required config keys when neither config.code nor filePath is given", async () => {
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "create",
+        flowId: ID.flow,
+        parentNodeId: ID.tool,
+        mode: "appendChild",
+        nodeType: "code",
+        label: "Compute",
+      });
+
+      expect(result.error).toMatch(/Missing required config keys/);
+      expect(result.error).toMatch(/code/);
+      expect(api.post).not.toHaveBeenCalled();
+    });
+
+    it("rejects a relative filePath on create even when the file exists", async () => {
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "create",
+        flowId: ID.flow,
+        parentNodeId: ID.tool,
+        mode: "appendChild",
+        nodeType: "code",
+        label: "Compute",
+        filePath: "relative/node.js",
+      });
+
+      expect(result.error).toMatch(/absolute path/i);
+      expect(api.post).not.toHaveBeenCalled();
+    });
+
+    it("rejects a relative filePath on update", async () => {
+      const codeNodeId = "60d5ec49f1a2c8b1a4e0f012";
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "old" },
+      });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        filePath: "./node.js",
+      });
+
+      expect(result.error).toMatch(/absolute path/i);
+      expect(api.patch).not.toHaveBeenCalled();
+    });
+
+    it("surfaces a legible error when filePath points at a directory", async () => {
+      const codeNodeId = "60d5ec49f1a2c8b1a4e0f012";
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "old" },
+      });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        filePath: dir,
+      });
+
+      expect(result.error).toBeDefined();
+      expect(result.error).toMatch(/Failed to read/);
+      expect(api.patch).not.toHaveBeenCalled();
+    });
+
+    it("accepts an empty file as valid empty content (config.code = '')", async () => {
+      const codeNodeId = "60d5ec49f1a2c8b1a4e0f012";
+      const file = join(dir, "empty.js");
+      writeFileSync(file, "", "utf-8");
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "old" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        filePath: file,
+      });
+
+      expect(result.updated).toBe(true);
+      const patchBody = api.patch.mock.calls[0][1] as any;
+      expect(patchBody.config.code).toBe("");
+    });
+
+    it("rejects filePath for a node type with no single content field", async () => {
+      const sayNodeId = "60d5ec49f1a2c8b1a4e0f014";
+      const file = join(dir, "text.txt");
+      writeFileSync(file, "hi", "utf-8");
+      api.get.mockResolvedValueOnce({
+        _id: sayNodeId,
+        type: "say",
+        config: { say: { text: ["old"] } },
+      });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: sayNodeId,
+        filePath: file,
+      });
+
+      expect(result.error).toMatch(/not supported/);
+      expect(api.patch).not.toHaveBeenCalled();
+    });
+
+    it("leaves the inline config.code path unchanged when no filePath is given", async () => {
+      const codeNodeId = "60d5ec49f1a2c8b1a4e0f012";
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "old" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "input.result = 1;" },
+      });
+
+      expect(result.updated).toBe(true);
+      const patchBody = api.patch.mock.calls[0][1] as any;
+      expect(patchBody.config.code).toBe("input.result = 1;");
     });
   });
 

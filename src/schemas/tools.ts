@@ -173,6 +173,9 @@ export const createToolSchema = z.object({
     postProcessCode: z.string().optional(),
     toolResponseValue: z.string().optional(),
   }),
+  // Local-only ergonomic: read config.parameters (a JSON Schema) from a local
+  // file instead of inlining it. Mutually exclusive with config.parameters.
+  parametersFilePath: z.string().min(1).optional(),
 });
 
 // Tool 10: update_tool
@@ -207,6 +210,9 @@ export const updateToolSchema = z.object({
       resolveNodeId: idSchema.optional(),
     })
     .optional(),
+  // Local-only ergonomic: read config.parameters (a JSON Schema) from a local
+  // file instead of inlining it. Mutually exclusive with config.parameters.
+  parametersFilePath: z.string().min(1).optional(),
 });
 
 // Tool 12: manage_flow_nodes
@@ -219,6 +225,12 @@ export const manageFlowNodesSchema = z.object({
   parentNodeId: idSchema.optional(),
   mode: z.enum(["append", "appendChild"]).optional(),
   config: z.record(z.any()).optional(),
+  // Local-only ergonomic: read the node's single large content field (code
+  // node `code`, xApp HTML node `html`) from a local file instead of
+  // inlining it in config. Mutually exclusive with the corresponding
+  // inline config field. Only supported for node types with exactly one
+  // such field — see FILE_PUSH_TARGETS in handlers.ts.
+  filePath: z.string().min(1).optional(),
   // render operation
   focus: z.union([idSchema, z.array(idSchema)]).optional(),
   format: z.enum(["ascii", "mermaid", "both"]).optional(),

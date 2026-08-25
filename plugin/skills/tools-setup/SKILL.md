@@ -39,6 +39,8 @@ toolResponseValue: "{{JSON.stringify(input.result)}}"
 
 IMPORTANT: The node label in the flow uses `toolId` (snake_case), not the display `name`. Always provide `toolId`.
 
+For a large `parameters` JSON Schema, pass `parametersFilePath` (an absolute path to a local `.json` file) instead of inlining `config.parameters` — avoids regenerating the whole schema string on every edit. Local-only (requires the MCP server to have filesystem access, e.g. Claude Code's local npx launch); provide exactly one of `config.parameters` or `parametersFilePath`. Same option on `update_tool`.
+
 The Resolve Tool Action node is auto-created with an `answer` field that controls what is returned to the LLM. Default for general-purpose tools: `{{JSON.stringify(input.result)}}`. Set `toolResponseValue` to customize it.
 
 ### knowledge — Search a Knowledge Store
