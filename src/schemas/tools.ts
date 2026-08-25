@@ -82,6 +82,13 @@ export const listResourcesSchema = z.object({
   endDate: z.string().optional(),
   channel: z.string().optional(),
   useCase: z.string().optional(),
+  sort: z
+    .string()
+    .regex(
+      /^[A-Za-z][A-Za-z0-9_]*:(asc|desc)$/,
+      "Must be 'field:direction', e.g. 'lastChanged:desc'",
+    )
+    .optional(),
   ...paginationSchema,
 });
 
@@ -98,6 +105,7 @@ export const getResourceSchema = z.object({
     "knowledge_store",
     "extension",
     "function",
+    "user",
   ]),
   id: z.string().min(1),
   projectId: idSchema.optional(),
@@ -650,3 +658,50 @@ export const auditVoiceAgentSchema = z
 export const explainSchema = z.object({
   topic: z.string().optional(),
 });
+
+// Tool 18: manage_snapshots
+//
+// `create` deliberately takes a short `label`, not a full `name`: the plugin
+// owns the name so the "[AI Backup] " marker prefix can never be omitted by the
+// caller, and so the timestamp that keeps names unique is always present.
+const snapshotTimeoutSchema = z.number().int().min(1000).max(3600000);
+
+export const manageSnapshotsSchema = z.discriminatedUnion("operation", [
+  z.object({
+    operation: z.literal("list"),
+    projectId: idSchema,
+    ...paginationSchema,
+  }),
+  z.object({
+    operation: z.literal("create"),
+    projectId: idSchema,
+    label: z.string().min(1).max(120).optional(),
+    confirmDeleteOldest: z.boolean().optional(),
+    waitForCompletion: z.boolean().optional(),
+    timeoutMs: snapshotTimeoutSchema.optional(),
+  }),
+  z.object({
+    operation: z.literal("restore"),
+    projectId: idSchema,
+    snapshotId: idSchema,
+    confirm: z.boolean().optional(),
+    waitForCompletion: z.boolean().optional(),
+    timeoutMs: snapshotTimeoutSchema.optional(),
+  }),
+  z.object({
+    operation: z.literal("delete"),
+    projectId: idSchema,
+    snapshotId: idSchema,
+    waitForCompletion: z.boolean().optional(),
+    timeoutMs: snapshotTimeoutSchema.optional(),
+  }),
+  z.object({
+    operation: z.literal("decline"),
+    projectId: idSchema,
+  }),
+  z.object({
+    operation: z.literal("read_task"),
+    projectId: idSchema,
+    taskId: idSchema,
+  }),
+]);
