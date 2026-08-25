@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normaliseResourceType } from "../tools/schemaIntrospection.js";
 
 const idSchema = z.string().regex(/^[a-f0-9]{24}$/, "Must be a 24-char hex ID");
 
@@ -700,3 +701,30 @@ export const manageSnapshotsSchema = z.discriminatedUnion("operation", [
     taskId: idSchema,
   }),
 ]);
+
+// Tool 18: describe_resource_schema
+export const describeResourceSchemaSchema = z
+  .object({
+    resourceType: z.string().min(1),
+    operation: z.enum(["create", "update", "get", "list", "delete"]).optional(),
+    nodeType: z.string().optional(),
+    flowId: idSchema.optional(),
+    verbose: z.boolean().optional(),
+  })
+  .refine((d) => d.nodeType === undefined || d.flowId !== undefined, {
+    message: "flowId is required when nodeType is set",
+    path: ["flowId"],
+  })
+  .refine((d) => d.nodeType !== undefined || d.operation !== undefined, {
+    message: "operation is required unless nodeType is set",
+    path: ["operation"],
+  })
+  .refine(
+    (d) =>
+      d.nodeType === undefined ||
+      normaliseResourceType(d.resourceType) === "node",
+    {
+      message: "nodeType is only valid with resourceType='node'",
+      path: ["resourceType"],
+    },
+  );
