@@ -15,6 +15,9 @@ export interface CognigyApiClientConfig {
 
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 500;
+// Cap on any delay we honour from a server-supplied Retry-After header — a
+// misbehaving/huge value shouldn't stall the tool call indefinitely.
+const MAX_RETRY_AFTER_MS = 30000;
 
 const RETRYABLE_NETWORK_CODES = new Set([
   "ECONNRESET",
@@ -26,12 +29,70 @@ const RETRYABLE_NETWORK_CODES = new Set([
   "ERR_NETWORK",
 ]);
 
+// Methods that are safe to blindly re-send: repeating them has no side effect
+// beyond what the first (possibly lost) response already caused.
+const IDEMPOTENT_METHODS = new Set(["get", "put", "delete", "patch"]);
+
+function isIdempotentMethod(method?: string): boolean {
+  return IDEMPOTENT_METHODS.has((method ?? "get").toLowerCase());
+}
+
+/**
+ * Whether a failed request is safe to retry.
+ *
+ * - 429 (rate-limited) is retried regardless of method: the request was
+ *   rejected *before* any processing, so re-sending it — including a POST —
+ *   cannot create a duplicate resource.
+ * - 5xx is retried only for idempotent methods (GET/PUT/DELETE/PATCH). A 5xx
+ *   on a POST is the dangerous case: the response can be lost/timed-out
+ *   *after* the write already committed on the server, so blindly retrying
+ *   a POST-create would create a duplicate resource. We deliberately do not
+ *   retry those.
+ * - Network-level errors (no response at all) carry the same ambiguity as a
+ *   5xx — we can't tell whether the request reached the server — so they're
+ *   likewise only retried for idempotent methods.
+ */
 function isRetryable(error: AxiosError): boolean {
+  const method = error.config?.method;
   if (error.response) {
     const status = error.response.status;
-    return status === 429 || status >= 500;
+    if (status === 429) return true;
+    if (status >= 500) return isIdempotentMethod(method);
+    return false;
   }
-  return RETRYABLE_NETWORK_CODES.has(error.code ?? "");
+  return (
+    isIdempotentMethod(method) && RETRYABLE_NETWORK_CODES.has(error.code ?? "")
+  );
+}
+
+/**
+ * Parse a Retry-After header value into a millisecond delay. Supports both
+ * forms from RFC 9110 §10.2.3: delta-seconds ("120") and an HTTP-date
+ * ("Wed, 21 Oct 2026 07:28:00 GMT"). Returns null if the header is absent or
+ * unparseable, in which case callers fall back to exponential backoff.
+ */
+function parseRetryAfterMs(headerValue: unknown): number | null {
+  if (typeof headerValue !== "string" || headerValue.trim() === "") {
+    return null;
+  }
+  const seconds = Number(headerValue);
+  if (Number.isFinite(seconds)) {
+    return Math.max(0, seconds) * 1000;
+  }
+  const dateMs = Date.parse(headerValue);
+  if (!Number.isNaN(dateMs)) {
+    return Math.max(0, dateMs - Date.now());
+  }
+  return null;
+}
+
+function getRetryAfterMs(error: AxiosError): number | null {
+  const headers = error.response?.headers as
+    | Record<string, unknown>
+    | undefined;
+  const raw = headers?.["retry-after"] ?? headers?.["Retry-After"];
+  const parsed = parseRetryAfterMs(raw);
+  return parsed === null ? null : Math.min(parsed, MAX_RETRY_AFTER_MS);
 }
 
 export class CognigyApiClient {
@@ -77,12 +138,16 @@ export class CognigyApiClient {
         if (config && isRetryable(error)) {
           config._retryCount = (config._retryCount ?? 0) + 1;
           if (config._retryCount <= MAX_RETRIES) {
-            const delay = RETRY_BASE_MS * Math.pow(2, config._retryCount - 1);
+            const retryAfterMs = getRetryAfterMs(error);
+            const delay =
+              retryAfterMs ??
+              RETRY_BASE_MS * Math.pow(2, config._retryCount - 1);
             logger.warn(
               `Retrying request (${config._retryCount}/${MAX_RETRIES}) after ${delay}ms`,
               {
                 status,
                 url: config.url,
+                honoredRetryAfter: retryAfterMs !== null,
               },
             );
             await new Promise((r) => setTimeout(r, delay));
