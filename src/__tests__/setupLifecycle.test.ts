@@ -23,6 +23,25 @@ const uninstallClaudeDesktop = jest.fn(() => ({
   removedEntry: true,
   removedEngine: false,
 }));
+const purgeUserHome = jest.fn(() => false);
+
+const antigravityHasPlugin = jest.fn<() => boolean>(() => false);
+const installedPluginVersion = jest.fn<() => string | null>(() => null);
+const uninstallAntigravity = jest.fn(() => ({
+  removedPlugin: false,
+  removedLegacyServer: false,
+}));
+const updateAntigravity = jest.fn(() => ({ skills: [], agents: [] }));
+
+const codexHasCognigyPlugin = jest.fn<() => boolean>(() => false);
+const uninstallCodex = jest.fn(() => ({ method: "fallback" as const }));
+const updateCodex = jest.fn(() => ({ method: "fallback" as const }));
+
+const installedGeminiExtensionVersion = jest.fn<() => string | null>(
+  () => null,
+);
+const uninstallGemini = jest.fn(() => ({ method: "fallback" as const }));
+const updateGemini = jest.fn(() => ({ method: "fallback" as const }));
 
 const writeDesktopLauncher = jest.fn(() => "/home/.cognigy-plugin/launch.mjs");
 
@@ -58,10 +77,38 @@ jest.unstable_mockModule("../install/claudeDesktop.js", () => ({
   installDesktopEngine,
   resolveDesktopConfigPath: () => "/home/.config/claude_desktop_config.json",
   uninstallClaudeDesktop,
+  purgeUserHome,
 }));
 jest.unstable_mockModule("../install/desktopLauncher.js", () => ({
+  USER_HOME_DIR: "/home/.cognigy-plugin",
   DESKTOP_LAUNCHER_FILE: "/home/.cognigy-plugin/desktop-launch.mjs",
   writeDesktopLauncher,
+}));
+jest.unstable_mockModule("../install/antigravity.js", () => ({
+  antigravityHasPlugin,
+  detectAntigravity: jest.fn(() => null),
+  installAntigravity: jest.fn(),
+  installedPluginVersion,
+  uninstallAntigravity,
+  updateAntigravity,
+}));
+jest.unstable_mockModule("../install/cliRunner.js", () => ({
+  detectOnPath: jest.fn(() => null),
+  runCliTool: jest.fn(),
+  runCliToolCapture: jest.fn(),
+}));
+jest.unstable_mockModule("../install/codex.js", () => ({
+  codexGuiSteps: jest.fn(() => []),
+  codexHasCognigyPlugin,
+  installCodex: jest.fn(),
+  uninstallCodex,
+  updateCodex,
+}));
+jest.unstable_mockModule("../install/gemini.js", () => ({
+  installGemini: jest.fn(),
+  installedGeminiExtensionVersion,
+  uninstallGemini,
+  updateGemini,
 }));
 jest.unstable_mockModule("../userConfigFile.js", () => ({
   readUserConfigFile,
@@ -156,6 +203,20 @@ beforeEach(() => {
     removedEntry: true,
     removedEngine: false,
   });
+  purgeUserHome.mockReset().mockReturnValue(false);
+  antigravityHasPlugin.mockReset().mockReturnValue(false);
+  installedPluginVersion.mockReset().mockReturnValue(null);
+  uninstallAntigravity.mockReset().mockReturnValue({
+    removedPlugin: false,
+    removedLegacyServer: false,
+  });
+  updateAntigravity.mockReset().mockReturnValue({ skills: [], agents: [] });
+  codexHasCognigyPlugin.mockReset().mockReturnValue(false);
+  uninstallCodex.mockReset().mockReturnValue({ method: "fallback" });
+  updateCodex.mockReset().mockReturnValue({ method: "fallback" });
+  installedGeminiExtensionVersion.mockReset().mockReturnValue(null);
+  uninstallGemini.mockReset().mockReturnValue({ method: "fallback" });
+  updateGemini.mockReset().mockReturnValue({ method: "fallback" });
   writeDesktopLauncher.mockReset().mockReturnValue("/x/launch.mjs");
   readUserConfigFile.mockReset().mockReturnValue({});
   runNpm.mockReset().mockReturnValue({ status: 0, stdout: "1.7.0\n" });
@@ -360,20 +421,26 @@ describe("runUninstall", () => {
     expect(uninstallClaudeCode).toHaveBeenCalledTimes(1);
   });
 
-  it("--purge is forwarded to uninstallClaudeDesktop as purgeEngine=true", async () => {
-    await captureStdoutAsync(() => runUninstall(["--yes", "--purge"]));
+  it("--purge removes ~/.cognigy-plugin via purgeUserHome (shared, not per-client)", async () => {
+    purgeUserHome.mockReturnValue(true);
+    const { out } = await captureStdoutAsync(() =>
+      runUninstall(["--yes", "--purge"]),
+    );
     expect(uninstallClaudeDesktop).toHaveBeenCalledWith(
       "/home/.config/claude_desktop_config.json",
-      true,
+      false,
     );
+    expect(purgeUserHome).toHaveBeenCalledTimes(1);
+    expect(out).toContain("Removed ~/.cognigy-plugin");
   });
 
-  it("without --purge, forwards purgeEngine=false", async () => {
+  it("without --purge, purgeUserHome is never called", async () => {
     await captureStdoutAsync(() => runUninstall(["--yes"]));
     expect(uninstallClaudeDesktop).toHaveBeenCalledWith(
       "/home/.config/claude_desktop_config.json",
       false,
     );
+    expect(purgeUserHome).not.toHaveBeenCalled();
   });
 
   it("reports 'nothing to remove' when the CLI removed nothing", async () => {
