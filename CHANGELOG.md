@@ -1,3 +1,64 @@
+## [1.12.0](https://github.com/Cognigy/cognigy-plugin/compare/v1.11.0...v1.12.0) (2026-08-21)
+
+### Features
+
+* **snapshots:** add manage_snapshots for backup and rollback ([#31](https://github.com/Cognigy/cognigy-plugin/issues/31)) ([1892215](https://github.com/Cognigy/cognigy-plugin/commit/1892215bcf6488a3a01def43e9e4194aa7ecc2c9))
+
+## [1.11.0](https://github.com/Cognigy/cognigy-plugin/compare/v1.10.1...v1.11.0) (2026-08-20)
+
+### Features
+
+* **skills:** agent-red-team skill and red-team agent ([#24](https://github.com/Cognigy/cognigy-plugin/issues/24)) ([1c34fb8](https://github.com/Cognigy/cognigy-plugin/commit/1c34fb8f2c42799a9497948fd5537a7a4f9df270))
+
+## [1.10.1](https://github.com/Cognigy/cognigy-plugin/compare/v1.10.0...v1.10.1) (2026-08-19)
+
+### Bug Fixes
+
+* make auto-updates actually reach users on ChatGPT + Codex and Antigravity ([#30](https://github.com/Cognigy/cognigy-plugin/issues/30)) ([aec1634](https://github.com/Cognigy/cognigy-plugin/commit/aec16343daae1d6435df8bf43626973f8833a68a)), closes [openai/codex#17425](https://github.com/openai/codex/issues/17425)
+
+## [1.10.0](https://github.com/Cognigy/cognigy-plugin/compare/v1.9.0...v1.10.0) (2026-08-18)
+
+### Features
+
+* **installer:** native Antigravity plugin support (IDE + agy CLI) ([#27](https://github.com/Cognigy/cognigy-plugin/issues/27)) ([151629f](https://github.com/Cognigy/cognigy-plugin/commit/151629fae397eef6f2ddce4dab69fcf90781e23a))
+
+## [1.9.0](https://github.com/Cognigy/cognigy-plugin/compare/v1.8.3...v1.9.0) (2026-08-18)
+
+### Features
+
+* full plugin-platform support for ChatGPT + Codex and Google Gemini CLI ([#18](https://github.com/Cognigy/cognigy-plugin/issues/18)) ([922efdc](https://github.com/Cognigy/cognigy-plugin/commit/922efdcffcbac3e612d27452683bc876eeb151a0)), closes [#4A0D8F](https://github.com/Cognigy/cognigy-plugin/issues/4A0D8F) [#6001FF](https://github.com/Cognigy/cognigy-plugin/issues/6001FF) [#26](https://github.com/Cognigy/cognigy-plugin/issues/26) [#26](https://github.com/Cognigy/cognigy-plugin/issues/26) [#26](https://github.com/Cognigy/cognigy-plugin/issues/26)
+
+## [1.8.3](https://github.com/Cognigy/cognigy-plugin/compare/v1.8.2...v1.8.3) (2026-08-18)
+
+### Bug Fixes
+
+* **config:** derive endpoint/webchat/static URLs for prefixed tenant … ([#12](https://github.com/Cognigy/cognigy-plugin/issues/12)) [skip ci] ([31ac010](https://github.com/Cognigy/cognigy-plugin/commit/31ac010ad8266922f6762e713bb0f42e3f35cb78))
+* make credentials work on hosts without userConfig support (VS Code, Cursor) ([#26](https://github.com/Cognigy/cognigy-plugin/issues/26)) ([ec83a97](https://github.com/Cognigy/cognigy-plugin/commit/ec83a9726c4dc8d76aa5be6ff1ab7274ec047463))
+
+## [1.8.2](https://github.com/Cognigy/cognigy-plugin/compare/v1.8.1...v1.8.2) (2026-08-17)
+
+### Bug Fixes
+
+* **server:** shut down on stdin close, not just SIGINT/SIGTERM ([#28](https://github.com/Cognigy/cognigy-plugin/issues/28)) ([fa8591f](https://github.com/Cognigy/cognigy-plugin/commit/fa8591f8633b8effe212d05074b81ce6a54bb061))
+
+## [1.8.1](https://github.com/Cognigy/cognigy-plugin/compare/v1.8.0...v1.8.1) (2026-07-31)
+
+### Documentation
+
+* **docs-lookup:** filesystem-first lookup + REST API-route recipe ([#17](https://github.com/Cognigy/cognigy-plugin/issues/17)) ([d02bd88](https://github.com/Cognigy/cognigy-plugin/commit/d02bd88daad4414f84d118db5eadf8cdd0952d4b))
+
+## [1.8.0](https://github.com/Cognigy/cognigy-plugin/compare/v1.7.1...v1.8.0) (2026-07-31)
+
+### Features
+
+* **tools:** sort list_resources server-side and resolve the current user ([#16](https://github.com/Cognigy/cognigy-plugin/issues/16)) ([8c3e725](https://github.com/Cognigy/cognigy-plugin/commit/8c3e7252fed53f04933a53e5cf17383fefd44f5a))
+
+## [1.7.1](https://github.com/Cognigy/cognigy-plugin/compare/v1.7.0...v1.7.1) (2026-07-31)
+
+### Bug Fixes
+
+* **plugin:** npm-alias engine pin + one-command local dev testing ([#15](https://github.com/Cognigy/cognigy-plugin/issues/15)) ([68d7aec](https://github.com/Cognigy/cognigy-plugin/commit/68d7aecef10af58016d93e34d23e3f1c0e2f91ba))
+
 ## [1.7.0](https://github.com/Cognigy/cognigy-plugin/compare/v1.6.0...v1.7.0) (2026-07-30)
 
 ### Features
