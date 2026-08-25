@@ -1,3 +1,5 @@
+import { summarizeSnapshot } from "./snapshotManagement.js";
+
 export interface ResponseHints {
   hint?: string;
   warning?: string;
@@ -5,7 +7,7 @@ export interface ResponseHints {
   action?: string;
 }
 
-export function withHints<T extends Record<string, unknown>>(
+export function withHints<T extends object>(
   data: T,
   hints: ResponseHints,
 ): T & { _hints: ResponseHints } {
@@ -18,11 +20,15 @@ export function withHints<T extends Record<string, unknown>>(
 const rid = (r: any): string => r._id || r.id;
 
 export const RESOURCE_FILTERS: Record<string, (raw: any) => any> = {
+  // `projectId` comes from the API as `projectReference`. It is exposed here
+  // because snapshots are project-scoped: a caller holding only an agent id
+  // has no other way through this surface to find the project to back up.
   agent: (r) => ({
     id: rid(r),
     referenceId: r.referenceId,
     name: r.name,
     description: r.description,
+    projectId: r.projectReference ?? r.projectId,
     createdAt: r.createdAt,
   }),
   flow: (r) => ({
@@ -84,11 +90,22 @@ export const RESOURCE_FILTERS: Record<string, (raw: any) => any> = {
     startedAt: r.startedAt,
     messageCount: r.messageCount,
   }),
+  // `lastChanged` instead of `createdAt`: for "which project am I working in"
+  // recency beats creation date, and it costs 2 extra chars. Projects have no
+  // `description` field at all. `lastChangedBy` is deliberately omitted — it is
+  // an opaque 24-hex user id; resolve it with get_resource { resourceType:
+  // 'user', id: 'me' } and read it from the single-project raw response.
   project: (r) => ({
     id: rid(r),
     name: r.name,
-    description: r.description,
-    createdAt: r.createdAt,
+    lastChanged: r.lastChanged,
+  }),
+  // Drops `projects` (a long array of opaque project ids) and `organisation`.
+  // `id` is what project/agent `createdBy` + `lastChangedBy` reference.
+  user: (r) => ({
+    id: rid(r),
+    name: r.name,
+    roles: r.roles,
   }),
   extension: (r) => ({
     id: rid(r),
@@ -105,6 +122,15 @@ export const RESOURCE_FILTERS: Record<string, (raw: any) => any> = {
     name: r.name ?? r.label,
     toolType: r.toolType ?? r.type,
   }),
+  // Delegated, not re-implemented: `isPluginBackup` is the deletion gate, and a
+  // second copy of that computation is the kind of thing that drifts. list
+  // renders through this filter while create/restore/delete return
+  // summarizeSnapshot directly — both must agree, always.
+  //
+  // (summarizeSnapshot drops `hash` and `packageExpiresAt` for the same reason
+  // this filter did: both only matter for downloading, which this plugin
+  // deliberately does not do.)
+  snapshot: summarizeSnapshot,
 };
 
 /**
