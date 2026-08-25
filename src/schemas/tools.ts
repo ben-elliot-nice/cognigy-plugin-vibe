@@ -654,7 +654,12 @@ export const auditVoiceAgentSchema = z
     path: ["aiAgentId"],
   });
 
-// Tool 17: manage_snapshots
+// Tool 17: explain
+export const explainSchema = z.object({
+  topic: z.string().optional(),
+});
+
+// Tool 18: manage_snapshots
 //
 // `create` deliberately takes a short `label`, not a full `name`: the plugin
 // owns the name so the "[AI Backup] " marker prefix can never be omitted by the

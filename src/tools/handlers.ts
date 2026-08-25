@@ -33,6 +33,7 @@ import {
 } from "./voiceChecklist.js";
 import { z } from "zod";
 import * as schemas from "../schemas/tools.js";
+import { TOPIC_INDEX, CONTENT } from "./explainTopics.generated.js";
 import {
   chartToAscii,
   chartToMermaid,
@@ -4999,6 +5000,22 @@ export class ToolHandlers {
     };
   }
 
+  // Tool 17: explain
+  handleExplain(args: any): any {
+    const data = schemas.explainSchema.parse(args);
+    const topic = (data.topic || "").trim();
+
+    if (!topic) {
+      return { text: `# Cognigy Plugin Reference Library\n${TOPIC_INDEX}` };
+    }
+    if (topic in CONTENT) {
+      return { text: CONTENT[topic].trim() };
+    }
+    return {
+      text: `Unknown topic: '${topic}'\n\nAvailable topics:\n${TOPIC_INDEX}`,
+    };
+  }
+
   // =========================================================================
   // Tool 17: manage_snapshots
   // =========================================================================
@@ -6040,6 +6057,9 @@ export class ToolHandlers {
           break;
         case "audit_voice_agent":
           result = await this.handleAuditVoiceAgent(args);
+          break;
+        case "explain":
+          result = this.handleExplain(args);
           break;
         case "manage_snapshots":
           result = await this.handleManageSnapshots(args);
