@@ -450,6 +450,32 @@ describe("listResourcesSchema", () => {
       }),
     ).toThrow();
   });
+
+  it("accepts a field:direction sort", () => {
+    const result = schemas.listResourcesSchema.parse({
+      resourceType: "project",
+      sort: "lastChanged:desc",
+    });
+    expect(result.sort).toBe("lastChanged:desc");
+  });
+
+  it("rejects a sort without a direction", () => {
+    expect(() =>
+      schemas.listResourcesSchema.parse({
+        resourceType: "project",
+        sort: "lastChanged",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects an unknown sort direction", () => {
+    expect(() =>
+      schemas.listResourcesSchema.parse({
+        resourceType: "project",
+        sort: "lastChanged:descending",
+      }),
+    ).toThrow();
+  });
 });
 
 describe("getResourceSchema", () => {
@@ -459,6 +485,23 @@ describe("getResourceSchema", () => {
       id: VALID_ID,
     });
     expect(result.resourceType).toBe("agent");
+  });
+
+  it("accepts user resource type with the 'me' alias", () => {
+    const result = schemas.getResourceSchema.parse({
+      resourceType: "user",
+      id: "me",
+    });
+    expect(result.resourceType).toBe("user");
+    expect(result.id).toBe("me");
+  });
+
+  it("accepts user resource type with a hex id", () => {
+    const result = schemas.getResourceSchema.parse({
+      resourceType: "user",
+      id: VALID_ID,
+    });
+    expect(result.id).toBe(VALID_ID);
   });
 });
 
@@ -840,5 +883,92 @@ describe("describeResourceSchemaSchema", () => {
         flowId: VALID_ID,
       }),
     ).not.toThrow();
+  });
+});
+
+describe("manageSnapshotsSchema", () => {
+  it("accepts list input", () => {
+    const result = schemas.manageSnapshotsSchema.parse({
+      operation: "list",
+      projectId: VALID_ID,
+      limit: 50,
+    });
+    expect(result.operation).toBe("list");
+  });
+
+  it("accepts create input with a label", () => {
+    const result = schemas.manageSnapshotsSchema.parse({
+      operation: "create",
+      projectId: VALID_ID,
+      label: "pre-persona-update",
+      confirmDeleteOldest: true,
+    });
+    expect(result.operation).toBe("create");
+  });
+
+  it("accepts restore input with confirm", () => {
+    const result = schemas.manageSnapshotsSchema.parse({
+      operation: "restore",
+      projectId: VALID_ID,
+      snapshotId: VALID_ID,
+      confirm: true,
+    });
+    expect(result.operation).toBe("restore");
+  });
+
+  it("accepts delete input", () => {
+    const result = schemas.manageSnapshotsSchema.parse({
+      operation: "delete",
+      projectId: VALID_ID,
+      snapshotId: VALID_ID,
+    });
+    expect(result.operation).toBe("delete");
+  });
+
+  it("accepts read_task input", () => {
+    const result = schemas.manageSnapshotsSchema.parse({
+      operation: "read_task",
+      projectId: VALID_ID,
+      taskId: VALID_ID,
+    });
+    expect(result.operation).toBe("read_task");
+  });
+
+  it("rejects restore without a snapshotId", () => {
+    expect(() =>
+      schemas.manageSnapshotsSchema.parse({
+        operation: "restore",
+        projectId: VALID_ID,
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a non-hex snapshotId", () => {
+    expect(() =>
+      schemas.manageSnapshotsSchema.parse({
+        operation: "delete",
+        projectId: VALID_ID,
+        snapshotId: "not-an-id",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects an out-of-range timeoutMs", () => {
+    expect(() =>
+      schemas.manageSnapshotsSchema.parse({
+        operation: "create",
+        projectId: VALID_ID,
+        timeoutMs: 10,
+      }),
+    ).toThrow();
+  });
+
+  it("rejects an unknown operation", () => {
+    expect(() =>
+      schemas.manageSnapshotsSchema.parse({
+        operation: "download",
+        projectId: VALID_ID,
+      }),
+    ).toThrow();
   });
 });
