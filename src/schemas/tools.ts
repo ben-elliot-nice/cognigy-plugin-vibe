@@ -700,3 +700,6 @@ export const manageSnapshotsSchema = z.discriminatedUnion("operation", [
     taskId: idSchema,
   }),
 ]);
+
+// Dev-only tool: reload_mcp
+export const reloadMcpSchema = z.object({});

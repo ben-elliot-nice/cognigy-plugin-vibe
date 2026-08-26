@@ -19,6 +19,7 @@
   "scripts": {
     "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && npx tsc && node scripts/copy-assets.mjs",
     "dev": "tsx watch src/index.ts",
+    "dev:hot": "tsx src/dev/supervisor.ts",
     "plugin:dev": "node scripts/dev-plugin.mjs on",
     "plugin:dev:off": "node scripts/dev-plugin.mjs off",
     "check:manifest": "node scripts/check-plugin-manifest.mjs",
