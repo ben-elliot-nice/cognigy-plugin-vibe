@@ -219,6 +219,9 @@ export const manageFlowNodesSchema = z.object({
   parentNodeId: idSchema.optional(),
   mode: z.enum(["append", "appendChild"]).optional(),
   config: z.record(z.any()).optional(),
+  // update operation — see writeConflict.ts. Overrides a blocked write
+  // (remote content differs from what this tool last pushed).
+  forceWrite: z.boolean().optional(),
   // render operation
   focus: z.union([idSchema, z.array(idSchema)]).optional(),
   format: z.enum(["ascii", "mermaid", "both"]).optional(),

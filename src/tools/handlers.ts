@@ -39,6 +39,12 @@ import {
   chartToHtml,
   chartLegend,
 } from "../render/flowRender.js";
+import {
+  SnapshotStore,
+  snapshotKey,
+  checkWriteConflict,
+  recordSnapshot,
+} from "./writeConflict.js";
 
 // The self-contained mermaid UMD build, inlined into rich flow-viz HTML so it
 // renders offline. Copied to dist/assets at build time (scripts/copy-assets.mjs);
@@ -412,6 +418,56 @@ function transformConfigForApi(
   }
 }
 
+interface ConflictFieldSpec {
+  /** Snapshot-key suffix, and what's shown in `_hints`/error messages. */
+  field: string;
+  /** Pull the comparable content out of a node's `config` object. */
+  extract: (config: Record<string, any>) => string;
+}
+
+/**
+ * Node types (and their config field) that get write-conflict detection on
+ * `manage_flow_nodes { operation: "update" }`. Scope: code node body,
+ * aiAgentJobTool definition, and xApp/HTML node markup — the three
+ * free-text/JSON payloads most likely to be hand-edited in the Cognigy UI
+ * between agent pushes. See src/tools/writeConflict.ts.
+ */
+function getConflictFieldSpec(nodeType: string): ConflictFieldSpec | null {
+  switch (nodeType) {
+    case "code":
+      return {
+        field: "code",
+        extract: (config) =>
+          typeof config?.code === "string" ? config.code : "",
+      };
+    case "setHTMLAppState":
+      return {
+        field: "html",
+        extract: (config) =>
+          typeof config?.html === "string" ? config.html : "",
+      };
+    case "aiAgentJobTool":
+      return {
+        field: "tool",
+        // No `condition` field here: unlike the Python reference's
+        // `.tool.json` convention, this codebase's create/update schemas
+        // (src/schemas/tools.ts) don't have one for tool nodes.
+        extract: (config) =>
+          JSON.stringify(
+            {
+              toolId: config?.toolId ?? "",
+              description: config?.description ?? "",
+              parameters: config?.parameters ?? "",
+            },
+            null,
+            2,
+          ),
+      };
+    default:
+      return null;
+  }
+}
+
 function identifyFailedStep(
   agentId: string | null,
   flowId: string | null,
@@ -624,6 +680,9 @@ export class ToolHandlers {
   private static readonly MAX_SNAPSHOT_PAGES = 20;
   private static readonly TASK_POLL_INTERVAL_MS = 3000;
 
+  /** Snapshot store for write-conflict detection on node config writes (see writeConflict.ts). */
+  private readonly snapshotStore: SnapshotStore;
+
   /**
    * Resource types a snapshot does NOT capture. Deleting one of these is not
    * protected by a backup at all, so holding the call would offer a rollback
@@ -744,7 +803,10 @@ export class ToolHandlers {
     private endpointBaseUrl: string,
     private webchatBaseUrl: string = "",
     private staticFilesBaseUrl: string = "",
-  ) {}
+    snapshotStorePath?: string,
+  ) {
+    this.snapshotStore = new SnapshotStore(snapshotStorePath);
+  }
 
   private sanitizeArgs(args: Record<string, any>): Record<string, any> {
     const result: Record<string, any> = {};
@@ -3715,6 +3777,22 @@ export class ToolHandlers {
           (createdNode.parent &&
             (createdNode.parent._id || createdNode.parent.id));
 
+        // Record a baseline snapshot immediately for node types write-conflict
+        // detection covers, keyed the same way `update` expects. Without
+        // this, a UI edit made between this create and the node's first
+        // `update` call would be silently clobbered — the exact bug class
+        // this feature exists to prevent (see getConflictFieldSpec).
+        if (nodeId) {
+          const createConflictSpec = getConflictFieldSpec(entry.type);
+          if (createConflictSpec) {
+            recordSnapshot(
+              this.snapshotStore,
+              snapshotKey(flowId, nodeId, createConflictSpec.field),
+              createConflictSpec.extract(apiConfig ?? {}),
+            );
+          }
+        }
+
         const result = {
           nodeId,
           type: entry.type,
@@ -3761,6 +3839,10 @@ export class ToolHandlers {
         }
 
         const patchPayload: any = {};
+        // Set when the node type is one write-conflict detection covers
+        // (see getConflictFieldSpec) — used after a successful PATCH to
+        // refresh the snapshot of "what we last pushed".
+        let conflictSpec: ConflictFieldSpec | null = null;
         if (data.label) patchPayload.label = data.label;
         if (data.config) {
           const existingNode: any = await this.apiClient.get(
@@ -3836,7 +3918,38 @@ export class ToolHandlers {
             );
           } else {
             const transformed = transformConfigForApi(nodeType, data.config);
-            patchPayload.config = deepMerge(existingConfig, transformed);
+            const merged = deepMerge(existingConfig, transformed);
+
+            conflictSpec = getConflictFieldSpec(nodeType);
+            if (conflictSpec) {
+              const key = snapshotKey(flowId, data.nodeId, conflictSpec.field);
+              const remoteContent = conflictSpec.extract(existingConfig);
+              const check = checkWriteConflict(
+                this.snapshotStore,
+                key,
+                remoteContent,
+                { force: data.forceWrite === true },
+              );
+              if (check.blocked) {
+                return withHints(
+                  {
+                    conflict: true,
+                    nodeId: data.nodeId,
+                    field: conflictSpec.field,
+                    message: check.message,
+                    diff: check.diff,
+                  },
+                  {
+                    warning:
+                      "Write blocked to avoid clobbering an edit made in the Cognigy UI (or by another agent) since this tool last pushed.",
+                    action:
+                      'Review the diff. Incorporate the remote changes into your next config, or retry manage_flow_nodes { operation: "update", ... } with the same args plus forceWrite: true to overwrite anyway.',
+                  },
+                );
+              }
+            }
+
+            patchPayload.config = merged;
           }
         }
 
@@ -3844,6 +3957,14 @@ export class ToolHandlers {
           `/v2.0/flows/${flowId}/chart/nodes/${data.nodeId}`,
           patchPayload,
         );
+
+        if (conflictSpec && patchPayload.config) {
+          recordSnapshot(
+            this.snapshotStore,
+            snapshotKey(flowId, data.nodeId, conflictSpec.field),
+            conflictSpec.extract(patchPayload.config),
+          );
+        }
 
         const result = {
           updated: true,

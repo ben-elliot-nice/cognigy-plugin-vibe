@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { randomUUID } from "crypto";
 import { Readable } from "stream";
 import { CognigyApiClient } from "../api/client.js";
 import { ToolHandlers } from "../tools/handlers.js";
@@ -37,6 +38,15 @@ const answerBackupGate = (handlers: ToolHandlers) => {
   (handlers as any).backupDeclinedForProject.add(ID.project);
 };
 
+// Isolated per-test snapshot store path — never touch a real machine's
+// ~/.cognigy-plugin write-conflict snapshot file (see writeConflict.test.ts).
+function isolatedSnapshotPath(): string {
+  return join(
+    mkdtempSync(join(tmpdir(), "cognigy-snap-")),
+    `${randomUUID()}.json`,
+  );
+}
+
 describe("ToolHandlers v2", () => {
   let api: jest.Mocked<CognigyApiClient>;
   let h: ToolHandlers;
@@ -55,6 +65,12 @@ describe("ToolHandlers v2", () => {
       "https://endpoint-trial.cognigy.ai",
       "",
       "https://static-trial.cognigy.ai",
+      // Isolated per-test snapshot store — never touch a real machine's
+      // ~/.cognigy-plugin (see writeConflict.test.ts for dedicated coverage).
+      join(
+        mkdtempSync(join(tmpdir(), "cognigy-snap-")),
+        `${randomUUID()}.json`,
+      ),
     );
     answerBackupGate(h);
   });
@@ -1927,6 +1943,187 @@ describe("ToolHandlers v2", () => {
   });
 
   // =========================================================================
+  // manage_flow_nodes — write-conflict detection (code node)
+  // =========================================================================
+  describe("manage_flow_nodes — write-conflict detection", () => {
+    const codeNodeId = "60d5ec49f1a2c8b1a4e0f013";
+
+    it("first write for a node proceeds (no snapshot yet) and stores one", async () => {
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "api.say('hello');" },
+      });
+
+      expect(result.updated).toBe(true);
+      expect(result.conflict).toBeUndefined();
+      expect(api.patch).toHaveBeenCalledTimes(1);
+    });
+
+    it("proceeds and refreshes the snapshot when the remote is unchanged since the last push", async () => {
+      // Push #1 — establishes the snapshot.
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+      await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "v1" },
+      });
+
+      // Push #2 — remote still reports exactly what push #1 wrote (no UI edit).
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "v1" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "v2" },
+      });
+
+      expect(result.updated).toBe(true);
+      expect(result.conflict).toBeUndefined();
+      expect(api.patch).toHaveBeenCalledTimes(2);
+    });
+
+    it("blocks the write with a diff when the remote drifted from the last-pushed snapshot", async () => {
+      // Push #1 — establishes the snapshot at "v1".
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+      await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "v1" },
+      });
+
+      // Someone edited the node in the Cognigy UI — remote no longer matches
+      // the "v1" snapshot.
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "edited in the UI" },
+      });
+      api.patch.mockClear();
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "v2 from agent" },
+      });
+
+      expect(result.conflict).toBe(true);
+      expect(result.diff).toContain("edited in the UI");
+      expect(result._hints?.warning).toMatch(/clobbering/i);
+      expect(api.patch).not.toHaveBeenCalled();
+    });
+
+    it("overwrites despite drift when forceWrite is true", async () => {
+      // Push #1 — establishes the snapshot at "v1".
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "" },
+      });
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+      await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "v1" },
+      });
+
+      // Drifted remote, but this write forces through.
+      api.get.mockResolvedValueOnce({
+        _id: codeNodeId,
+        type: "code",
+        config: { code: "edited in the UI" },
+      });
+      api.patch.mockClear();
+      api.patch.mockResolvedValueOnce({ _id: codeNodeId });
+
+      const result = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: codeNodeId,
+        config: { code: "v2 forced" },
+        forceWrite: true,
+      });
+
+      expect(result.updated).toBe(true);
+      expect(result.conflict).toBeUndefined();
+      expect(api.patch).toHaveBeenCalledTimes(1);
+      expect(api.patch.mock.calls[0][1].config.code).toBe("v2 forced");
+    });
+
+    it("blocks the first update when the node was edited in the UI right after create (no clobber window)", async () => {
+      const newCodeNodeId = "60d5ec49f1a2c8b1a4e0f014";
+      const parentNodeId = "60d5ec49f1a2c8b1a4e0f015";
+
+      // Create the node — a baseline snapshot of what was pushed ("v1")
+      // must be recorded immediately, before any `update` call happens.
+      api.post.mockResolvedValueOnce({
+        _id: newCodeNodeId,
+        parentId: parentNodeId,
+      });
+
+      const createResult = await h.handleToolCall("manage_flow_nodes", {
+        operation: "create",
+        flowId: ID.flow,
+        parentNodeId,
+        nodeType: "code",
+        label: "New Code Node",
+        config: { code: "v1" },
+      });
+      expect(createResult.nodeId).toBe(newCodeNodeId);
+
+      // Someone edits the node in the Cognigy UI before the agent's first
+      // `update` call — remote no longer matches what create just pushed.
+      api.get.mockResolvedValueOnce({
+        _id: newCodeNodeId,
+        type: "code",
+        config: { code: "edited in the UI right after create" },
+      });
+      api.patch.mockClear();
+
+      const updateResult = await h.handleToolCall("manage_flow_nodes", {
+        operation: "update",
+        flowId: ID.flow,
+        nodeId: newCodeNodeId,
+        config: { code: "v2 from agent" },
+      });
+
+      expect(updateResult.conflict).toBe(true);
+      expect(updateResult.diff).toContain(
+        "edited in the UI right after create",
+      );
+      expect(api.patch).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
   // manage_flow_nodes — branch child auto-rewrite
   // =========================================================================
   describe("manage_flow_nodes — branch child auto-rewrite", () => {
@@ -3158,7 +3355,16 @@ describe("audit_voice_agent", () => {
       put: jest.fn(),
       uploadFile: jest.fn(),
     } as any;
-    h = new ToolHandlers(api, "https://endpoint-trial.cognigy.ai");
+    h = new ToolHandlers(
+      api,
+      "https://endpoint-trial.cognigy.ai",
+      "",
+      "",
+      join(
+        mkdtempSync(join(tmpdir(), "cognigy-snap-")),
+        `${randomUUID()}.json`,
+      ),
+    );
     answerBackupGate(h);
   });
 
@@ -3503,7 +3709,13 @@ describe("manage_snapshots", () => {
       put: jest.fn(),
       uploadFile: jest.fn(),
     } as any;
-    h = new ToolHandlers(api, "https://endpoint-trial.cognigy.ai");
+    h = new ToolHandlers(
+      api,
+      "https://endpoint-trial.cognigy.ai",
+      "",
+      "",
+      isolatedSnapshotPath(),
+    );
   });
 
   describe("list", () => {
@@ -4081,7 +4293,13 @@ describe("manage_snapshots — deferred tasks", () => {
       put: jest.fn(),
       uploadFile: jest.fn(),
     } as any;
-    h = new ToolHandlers(api, "https://endpoint-trial.cognigy.ai");
+    h = new ToolHandlers(
+      api,
+      "https://endpoint-trial.cognigy.ai",
+      "",
+      "",
+      isolatedSnapshotPath(),
+    );
   });
 
   it("does not claim a delete succeeded when it was only queued", async () => {
@@ -4175,7 +4393,13 @@ describe("manage_snapshots — outcome safety", () => {
       put: jest.fn(),
       uploadFile: jest.fn(),
     } as any;
-    h = new ToolHandlers(api, "https://endpoint-trial.cognigy.ai");
+    h = new ToolHandlers(
+      api,
+      "https://endpoint-trial.cognigy.ai",
+      "",
+      "",
+      isolatedSnapshotPath(),
+    );
   });
 
   it("does not call a create failed when only the poll failed", async () => {
@@ -4392,7 +4616,13 @@ describe("manage_snapshots — versioned names", () => {
       put: jest.fn(),
       uploadFile: jest.fn(),
     } as any;
-    h = new ToolHandlers(api, "https://endpoint-trial.cognigy.ai");
+    h = new ToolHandlers(
+      api,
+      "https://endpoint-trial.cognigy.ai",
+      "",
+      "",
+      isolatedSnapshotPath(),
+    );
   });
 
   const versioned = (id: string, version: number, createdAt: number) => ({
@@ -4512,7 +4742,13 @@ describe("backup gate scoping", () => {
       put: jest.fn(),
       uploadFile: jest.fn(),
     } as any;
-    h = new ToolHandlers(api, "https://endpoint-trial.cognigy.ai");
+    h = new ToolHandlers(
+      api,
+      "https://endpoint-trial.cognigy.ai",
+      "",
+      "",
+      isolatedSnapshotPath(),
+    );
   });
 
   it("does not release the gate for another project after a decline", async () => {

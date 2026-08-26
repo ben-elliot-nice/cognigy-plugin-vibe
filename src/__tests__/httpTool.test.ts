@@ -1,6 +1,19 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
+import { mkdtempSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { randomUUID } from "crypto";
 import { CognigyApiClient } from "../api/client.js";
 import { ToolHandlers } from "../tools/handlers.js";
+
+// Isolated per-test snapshot store path — never touch a real machine's
+// ~/.cognigy-plugin write-conflict snapshot file (see writeConflict.test.ts).
+function isolatedSnapshotPath(): string {
+  return join(
+    mkdtempSync(join(tmpdir(), "cognigy-snap-")),
+    `${randomUUID()}.json`,
+  );
+}
 
 // The backup gate holds the first change to an existing agent until the user
 // answers; suites that are not testing the gate answer it up front. The answer
@@ -42,7 +55,13 @@ describe("create_tool – HTTP tool path", () => {
       delete: jest.fn(),
       put: jest.fn(),
     } as any;
-    h = new ToolHandlers(api, "https://endpoint-trial.cognigy.ai");
+    h = new ToolHandlers(
+      api,
+      "https://endpoint-trial.cognigy.ai",
+      "",
+      "",
+      isolatedSnapshotPath(),
+    );
     (h as any).backupDeclinedForProject.add(PROJECT_FOR_GATE);
   });
 
@@ -393,7 +412,13 @@ describe("update_tool – HTTP child-node resolution", () => {
       delete: jest.fn(),
       put: jest.fn(),
     } as any;
-    h = new ToolHandlers(api, "https://endpoint-trial.cognigy.ai");
+    h = new ToolHandlers(
+      api,
+      "https://endpoint-trial.cognigy.ai",
+      "",
+      "",
+      isolatedSnapshotPath(),
+    );
     (h as any).backupDeclinedForProject.add(PROJECT_FOR_GATE);
   });
 
