@@ -21,6 +21,7 @@ export const updateAiAgentSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   description: z.string().optional(),
   instructions: z.string().optional(),
+  avatarImagePath: z.string().optional(),
   jobConfig: z
     .object({
       llmProviderReferenceId: z.string().optional(),
@@ -146,6 +147,17 @@ export const manageKnowledgeSchema = z.object({
   url: z.string().url().optional(),
   text: z.string().optional(),
   filePath: z.string().optional(),
+  tags: z
+    .array(z.string())
+    .optional()
+    .refine(
+      (tags) => !tags || tags.every((tag) => !tag.includes(",")),
+      "Tags must not contain commas (the API joins tags with a comma delimiter)",
+    )
+    .refine(
+      (tags) => !tags || tags.every((tag) => tag.trim().length > 0),
+      "Tags must not be empty or whitespace-only strings",
+    ),
   filter: z.string().optional(),
   limit: z.number().int().min(1).max(50).optional(),
 });

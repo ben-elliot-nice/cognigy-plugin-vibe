@@ -49,6 +49,7 @@ describe("ToolHandlers v2", () => {
       delete: jest.fn(),
       put: jest.fn(),
       uploadFile: jest.fn(),
+      postForm: jest.fn(),
     } as any;
     h = new ToolHandlers(
       api,
@@ -360,6 +361,80 @@ describe("ToolHandlers v2", () => {
       });
 
       expect(result.error).toContain("Nothing to update");
+    });
+
+    it("validates, uploads an avatar image, and re-sends config.aiAgent so the preview isn't wiped", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "cognigy-mcp-avatar-"));
+      const filePath = join(dir, "avatar.png");
+      const pngBuffer = Buffer.alloc(24);
+      pngBuffer.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+      pngBuffer.write("IHDR", 12, "ascii");
+      pngBuffer.writeUInt32BE(136, 16);
+      pngBuffer.writeUInt32BE(184, 20);
+      writeFileSync(filePath, pngBuffer);
+
+      const mockAgent = {
+        _id: ID.agent,
+        referenceId: "ref-uuid",
+        name: "Agent",
+        flowId: ID.flow,
+      };
+      const mockJobNode = {
+        _id: "job-node-id-000000000001",
+        type: "aiAgentJob",
+        config: { aiAgent: "ref-uuid" },
+      };
+
+      api.patch.mockResolvedValue(mockAgent);
+      api.get
+        .mockResolvedValueOnce(mockAgent)
+        .mockResolvedValueOnce({ items: [mockJobNode] });
+
+      const result = await h.handleToolCall("update_ai_agent", {
+        aiAgentId: ID.agent,
+        avatarImagePath: filePath,
+      });
+
+      expect(result.updated).toContain("agent");
+      expect(result.updated).toContain("jobNode");
+
+      // Agent PATCH must carry the base64 data URI + imageOptimizedFormat.
+      expect(api.patch).toHaveBeenCalledWith(
+        `/v2.0/aiagents/${ID.agent}`,
+        expect.objectContaining({
+          image: expect.stringMatching(/^data:image\/png;base64,/),
+          imageOptimizedFormat: true,
+        }),
+      );
+
+      // Per the chart-model gotcha: any avatar change must re-send
+      // config.aiAgent on the job node patch, or the server recomputes the
+      // preview as a bare string and wipes the avatar.
+      expect(api.patch).toHaveBeenCalledWith(
+        `/v2.0/flows/${ID.flow}/chart/nodes/job-node-id-000000000001`,
+        { config: { aiAgent: "ref-uuid" } },
+      );
+    });
+
+    it("rejects an avatar image with the wrong dimensions before any API call", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "cognigy-mcp-avatar-bad-"));
+      const filePath = join(dir, "avatar.png");
+      const pngBuffer = Buffer.alloc(24);
+      pngBuffer.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+      pngBuffer.write("IHDR", 12, "ascii");
+      pngBuffer.writeUInt32BE(200, 16);
+      pngBuffer.writeUInt32BE(200, 20);
+      writeFileSync(filePath, pngBuffer);
+
+      const result = await h.handleToolCall("update_ai_agent", {
+        aiAgentId: ID.agent,
+        avatarImagePath: filePath,
+      });
+
+      expect(result.error).toMatch(/Invalid avatar image/);
+      expect(result.error).toMatch(/200x200/);
+      expect(api.patch).not.toHaveBeenCalled();
+      expect(api.get).not.toHaveBeenCalled();
     });
   });
 
@@ -1233,6 +1308,38 @@ describe("ToolHandlers v2", () => {
 
       expect(result.chunks).toHaveLength(0);
       expect(result._hints.likely_cause).toContain("No sources");
+    });
+
+    it("uploads a file source via multipart postForm, guessing content-type and joining tags", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "cognigy-mcp-knowledge-file-"));
+      const filePath = join(dir, "report.pdf");
+      writeFileSync(filePath, "pdf-bytes");
+
+      api.postForm.mockResolvedValueOnce({ taskData: { taskId: "task1" } });
+
+      const result = await h.handleToolCall("manage_knowledge", {
+        operation: "create_source",
+        knowledgeStoreId: ID.ks,
+        type: "file",
+        filePath,
+        tags: ["demo", "release-notes"],
+      });
+
+      expect(result.source.type).toBe("file");
+      expect(result.source.fileName).toBe("report.pdf");
+      expect(result.source.status).toBe("ingesting");
+      expect(result._hints.warning).toContain("async");
+
+      expect(api.postForm).toHaveBeenCalledTimes(1);
+      const [calledUrl, calledForm] = api.postForm.mock.calls[0];
+      expect(calledUrl).toBe(`/v2.0/knowledgestores/${ID.ks}/sources/upload`);
+      // Real multipart/form-data body: file part + content-type + tags.
+      const body = (calledForm as any).getBuffer().toString("utf-8");
+      expect(body).toContain('name="file"');
+      expect(body).toContain('filename="report.pdf"');
+      expect(body).toContain("Content-Type: application/pdf");
+      expect(body).toContain('name="tags"');
+      expect(body).toContain("demo,release-notes");
     });
   });
 
