@@ -22,17 +22,19 @@
 import { createInterface } from "readline";
 import { pathToFileURL } from "url";
 import type { UserConfigFile } from "./userConfigFile.js";
-import { writeUserConfigFile } from "./userConfigFile.js";
+import { readUserConfigFile, writeUserConfigFile } from "./userConfigFile.js";
 import {
   autoUpdateHint,
   detectClaudePath,
   installClaudeCode,
+  queryClaudeCodePlugin,
   uninstallClaudeCode,
   updateClaudeCode,
 } from "./install/claudeCode.js";
 import {
   desktopHasCognigyEntry,
   installClaudeDesktop,
+  installDesktopEngine,
   installedDesktopEngineVersion,
   purgeUserHome,
   resolveDesktopConfigPath,
@@ -51,6 +53,13 @@ import {
   DESKTOP_LAUNCHER_FILE,
   writeDesktopLauncher,
 } from "./install/desktopLauncher.js";
+import {
+  diffState,
+  gatherState,
+  planFixes,
+  type DriftIssue,
+  type SetupState,
+} from "./install/reconcile.js";
 import {
   codexGuiSteps,
   codexHasCognigyPlugin,
@@ -605,8 +614,33 @@ function npmLatestVersion(): string | null {
   }
 }
 
-/** `status` — report what's installed on each surface + the latest available. */
-function runStatus(): void {
+/** Gather the raw facts `reconcile.ts` reasons about. The only impure step —
+ *  every probe here is a thin read (npm view, `claude plugin list`, fs
+ *  existence checks); no writes happen until `--fix` plans are applied. */
+export function gatherFacts(latest: string | null): SetupState {
+  const cliPath = detectClaudePath();
+  const pluginInfo = queryClaudeCodePlugin(cliPath);
+  return gatherState({
+    latestEngineVersion: latest,
+    claudeCodeCliPresent: cliPath !== null,
+    claudeCodePluginVersion: pluginInfo?.version ?? null,
+    desktopConfigPresent: desktopHasCognigyEntry(),
+    desktopEngineVersion: installedDesktopEngineVersion(),
+    desktopLauncherPresent: existsSync(DESKTOP_LAUNCHER_FILE),
+  });
+}
+
+const DRIFT_LABELS: Record<DriftIssue["surface"], string> = {
+  claude_code_plugin: "Claude Code plugin version",
+  desktop_entry: "Claude Desktop connector entry",
+  desktop_launcher: "Claude Desktop launcher file",
+  desktop_engine: "Claude Desktop engine version",
+};
+
+/** `status` [--fix] — report what's installed on each surface, detect drift
+ *  against the latest published engine, and (with --fix) reconcile it. */
+export function runStatus(argv: string[]): void {
+  const fix = argv.includes("--fix");
   const latest = npmLatestVersion();
   const cliPath = detectClaudePath();
   const desktopEngine = installedDesktopEngineVersion();
@@ -666,11 +700,140 @@ function runStatus(): void {
       ),
     );
   }
+
+  const state = gatherFacts(latest);
+  const issues = diffState(state);
+  if (issues.length === 0) {
+    process.stdout.write(green("\n  No drift detected.\n\n"));
+    return;
+  }
+
+  const fixes = planFixes(issues);
+  process.stdout.write(
+    yellow(bold(`\n  Drift detected (${issues.length}):\n`)),
+  );
+  issues.forEach((issue, i) => {
+    const label = DRIFT_LABELS[issue.surface];
+    const from = issue.current ?? "absent";
+    process.stdout.write(
+      `    • ${label}: ${issue.kind === "missing" ? "missing" : `${from} → ${issue.expected} expected`}\n` +
+        dim(`      fix: ${fixes[i].description}\n`),
+    );
+  });
+
+  if (!fix) {
+    process.stdout.write(
+      dim("\n  Run `cognigy-setup status --fix` to reconcile.\n\n"),
+    );
+    return;
+  }
+
+  process.stdout.write(bold(cyan("\n  Applying fixes…\n")));
+  for (const action of fixes) {
+    try {
+      switch (action.surface) {
+        case "claude_code_plugin": {
+          updateClaudeCode();
+          process.stdout.write(
+            green(`  ✓ ${DRIFT_LABELS[action.surface]}`) + " updated.\n",
+          );
+          break;
+        }
+        case "desktop_launcher": {
+          writeDesktopLauncher();
+          process.stdout.write(
+            green(`  ✓ ${DRIFT_LABELS[action.surface]}`) + " rewritten.\n",
+          );
+          break;
+        }
+        case "desktop_engine": {
+          installDesktopEngine(latest ?? "latest");
+          process.stdout.write(
+            green(`  ✓ ${DRIFT_LABELS[action.surface]}`) + " updated.\n",
+          );
+          break;
+        }
+        case "desktop_entry": {
+          const creds = readUserConfigFile();
+          if (!creds.COGNIGY_API_KEY) {
+            process.stdout.write(
+              yellow(`  • ${DRIFT_LABELS[action.surface]}`) +
+                ": no stored credentials to rebuild it — re-run " +
+                cyan("cognigy-setup install --client claude-desktop") +
+                ".\n",
+            );
+            break;
+          }
+          installClaudeDesktop(creds);
+          process.stdout.write(
+            green(`  ✓ ${DRIFT_LABELS[action.surface]}`) +
+              " re-wired from stored credentials.\n",
+          );
+          break;
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stdout.write(
+        yellow(`  ✗ ${DRIFT_LABELS[action.surface]}`) + `: ${msg}\n`,
+      );
+    }
+  }
   process.stdout.write("\n");
 }
 
-/** `update` — pull the latest plugin (Claude Code); Desktop auto-updates. */
-function runUpdate(): void {
+/** `update` [--check] — pull the latest Claude Code plugin, or with --check
+ *  just report whether a newer engine is available without applying it.
+ *  Claude Desktop always auto-updates on its own next restart. */
+export function runUpdate(argv: string[]): void {
+  const check = argv.includes("--check");
+
+  if (check) {
+    process.stdout.write(bold(cyan("\nChecking for updates\n\n")));
+    const latest = npmLatestVersion();
+    if (!latest) {
+      process.stdout.write(
+        yellow("  Could not reach npm to check for updates (offline?).\n\n"),
+      );
+      return;
+    }
+    const state = gatherFacts(latest);
+    let any = false;
+    if (state.claudeCodeCliPresent && state.claudeCodePluginVersion) {
+      if (state.claudeCodePluginVersion !== latest) {
+        any = true;
+        process.stdout.write(
+          yellow(
+            `  Claude Code plugin: update available (${state.claudeCodePluginVersion} → ${latest}). Run \`cognigy-setup update\` or \`cognigy-setup status --fix\`.\n`,
+          ),
+        );
+      } else {
+        process.stdout.write(
+          green(`  Claude Code plugin: up to date (${latest}).\n`),
+        );
+      }
+    }
+    if (state.desktopEngineVersion !== null) {
+      if (state.desktopEngineVersion !== latest) {
+        any = true;
+        process.stdout.write(
+          yellow(
+            `  Claude Desktop engine: update available (${state.desktopEngineVersion} → ${latest}) — applies automatically on next Desktop restart, or run \`cognigy-setup status --fix\` now.\n`,
+          ),
+        );
+      } else {
+        process.stdout.write(
+          green(`  Claude Desktop engine: up to date (${latest}).\n`),
+        );
+      }
+    }
+    if (!any) {
+      process.stdout.write(dim("  Everything is up to date.\n"));
+    }
+    process.stdout.write("\n");
+    return;
+  }
+
   process.stdout.write(bold(cyan("\nUpdating NiCE Cognigy Plugin\n\n")));
   const res = updateClaudeCode();
   if (res.method === "cli") {
@@ -787,7 +950,7 @@ function runUpdate(): void {
  * ~/.cognigy-plugin, which is shared by every client, so it runs independently
  * of which clients were selected.
  */
-async function runUninstall(argv: string[]): Promise<void> {
+export async function runUninstall(argv: string[]): Promise<void> {
   const purge = argv.includes("--purge");
   const assumeYes = argv.includes("--yes") || argv.includes("-y");
   const selected = parseFlags(argv).clients;
@@ -972,9 +1135,9 @@ async function main(): Promise<void> {
     case "install":
       break;
     case "status":
-      return runStatus();
+      return runStatus(rest);
     case "update":
-      return runUpdate();
+      return runUpdate(rest);
     case "uninstall":
       return runUninstall(rest);
     default:
