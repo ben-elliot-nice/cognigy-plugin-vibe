@@ -25,6 +25,12 @@ import {
 import { buildWebchatSettings, deepMerge } from "./webchatSettings.js";
 import { getNodeEntry, supportedNodeTypes } from "./nodeRegistry.js";
 import {
+  normalizeSayConfig,
+  ensureToolAnswer,
+  normalizeResourceTypeArg,
+  ensureExtension,
+} from "./writeNormalization.js";
+import {
   evaluateChecks,
   summarize,
   nodeId as voiceNodeId,
@@ -2269,7 +2275,12 @@ export class ToolHandlers {
   // Tool 5: list_resources
   // =========================================================================
   async handleListResources(args: any): Promise<any> {
-    const data = schemas.listResourcesSchema.parse(args);
+    const data = schemas.listResourcesSchema.parse(
+      normalizeResourceTypeArg(
+        args,
+        schemas.listResourcesSchema.shape.resourceType.options,
+      ),
+    );
     const { resourceType, projectId, aiAgentId, limit, skip, sort } = data;
     // `sort` rides along with paging so every server-backed list endpoint gets
     // it. 'tool' builds its own params and has no server-side sort.
@@ -2462,7 +2473,12 @@ export class ToolHandlers {
   // Tool 6: get_resource
   // =========================================================================
   async handleGetResource(args: any): Promise<any> {
-    const data = schemas.getResourceSchema.parse(args);
+    const data = schemas.getResourceSchema.parse(
+      normalizeResourceTypeArg(
+        args,
+        schemas.getResourceSchema.shape.resourceType.options,
+      ),
+    );
     const { resourceType, id, raw } = data;
 
     const endpointMap: Record<string, string> = {
@@ -2503,7 +2519,12 @@ export class ToolHandlers {
   // Tool 7: delete_resource
   // =========================================================================
   async handleDeleteResource(args: any): Promise<any> {
-    const data = schemas.deleteResourceSchema.parse(args);
+    const data = schemas.deleteResourceSchema.parse(
+      normalizeResourceTypeArg(
+        args,
+        schemas.deleteResourceSchema.shape.resourceType.options,
+      ),
+    );
     const { resourceType, id, aiAgentId, cascade } = data;
 
     if (resourceType === "tool") {
@@ -3690,13 +3711,22 @@ export class ToolHandlers {
           }
         }
 
-        const apiConfig = data.config
-          ? transformConfigForApi(entry.type, data.config)
+        // Forgiving-input normalisation (migration item #10): lift a bare
+        // config.text on a say node into the config.say.text envelope before
+        // the general-purpose transformConfigForApi runs. Idempotent against
+        // configs that already carry a say object.
+        const normalizedConfig =
+          entry.type === "say" && data.config
+            ? normalizeSayConfig(data.config)
+            : data.config;
+
+        const apiConfig = normalizedConfig
+          ? transformConfigForApi(entry.type, normalizedConfig)
           : undefined;
 
         const createdNode: any = await this.apiClient.post(
           `/v2.0/flows/${flowId}/chart/nodes`,
-          {
+          ensureExtension({
             type: entry.type,
             extension: entry.extension,
             mode,
@@ -3705,7 +3735,7 @@ export class ToolHandlers {
             ...(apiConfig && Object.keys(apiConfig).length > 0
               ? { config: apiConfig }
               : {}),
-          },
+          }),
         );
 
         const nodeId = createdNode._id || createdNode.id;
@@ -3834,8 +3864,28 @@ export class ToolHandlers {
               flowId,
               data.nodeId,
             );
-          } else {
+          } else if (nodeType === "aiAgentToolAnswer") {
+            // Forgiving-input normalisation (migration item #10): a bare/empty
+            // config on this node type silently returns nothing to the LLM.
+            // Inject the canonical answer only if it's still missing after
+            // merging with the existing saved config — never clobber a real
+            // answer expression the node already has.
             const transformed = transformConfigForApi(nodeType, data.config);
+            const merged = deepMerge(existingConfig, transformed);
+            patchPayload.config = ensureToolAnswer(merged);
+          } else {
+            // Forgiving-input normalisation (migration item #10): lift a bare
+            // config.text on a say node into the config.say.text envelope.
+            // No-op for every other node type and for configs that already
+            // carry a say object.
+            const normalizedConfig: Record<string, any> =
+              nodeType === "say"
+                ? (normalizeSayConfig(data.config) ?? data.config)
+                : data.config;
+            const transformed = transformConfigForApi(
+              nodeType,
+              normalizedConfig,
+            );
             patchPayload.config = deepMerge(existingConfig, transformed);
           }
         }
