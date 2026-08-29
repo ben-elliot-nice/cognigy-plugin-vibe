@@ -8,11 +8,16 @@
  */
 import type { UserConfigFile } from "../userConfigFile.js";
 import { writeUserConfigFile } from "../userConfigFile.js";
-import { detectOnPath, runCliTool } from "./cliRunner.js";
+import { detectOnPath, runCliTool, runCliToolCapture } from "./cliRunner.js";
 
 const MARKETPLACE = "Cognigy/cognigy-plugin";
 const MARKETPLACE_NAME = "cognigy-plugin";
-const PLUGIN_ID = "cognigy@cognigy-plugin";
+export const PLUGIN_ID = "cognigy@cognigy-plugin";
+
+/** `claude plugin list --json` — used to read back the installed plugin version. */
+export function buildPluginListArgs(): string[] {
+  return ["plugin", "list", "--json"];
+}
 
 /** `claude plugin marketplace add <owner/repo>` — idempotent (no-op if present). */
 export function buildMarketplaceAddArgs(): string[] {
@@ -56,6 +61,42 @@ export function detectClaudePath(): string | null {
 
 function runClaude(claudePath: string, args: string[]) {
   return runCliTool("claude", claudePath, args);
+}
+
+/** Same as runClaude, but captures stdout/stderr instead of inheriting them. */
+function runClaudeCapture(claudePath: string, args: string[]) {
+  return runCliToolCapture("claude", claudePath, args);
+}
+
+export interface ClaudeCodePluginInfo {
+  version: string | null;
+  scope: string | null;
+}
+
+/**
+ * Read the installed plugin's version/scope via `claude plugin list --json`.
+ * Returns null when the CLI is absent, the command fails, output is
+ * unparsable, or the cognigy plugin isn't in the list — all treated as
+ * "can't determine", never thrown (this feeds best-effort drift detection).
+ */
+export function queryClaudeCodePlugin(
+  claudePath: string | null = detectClaudePath(),
+): ClaudeCodePluginInfo | null {
+  if (!claudePath) return null;
+  const res = runClaudeCapture(claudePath, buildPluginListArgs());
+  if (res.status !== 0 || !res.stdout) return null;
+  try {
+    const entries = JSON.parse(res.stdout) as Array<{
+      id?: string;
+      version?: string;
+      scope?: string;
+    }>;
+    const entry = entries.find((e) => e.id === PLUGIN_ID);
+    if (!entry) return null;
+    return { version: entry.version ?? null, scope: entry.scope ?? null };
+  } catch {
+    return null;
+  }
 }
 
 export type ClaudeCodeMethod = "cli" | "fallback";

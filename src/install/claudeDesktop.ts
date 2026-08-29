@@ -127,15 +127,16 @@ export interface DesktopInstallResult {
  * launcher, then merge the server entry into claude_desktop_config.json
  * (backing up any existing file first). Throws on a hard failure.
  */
-export function installClaudeDesktop(
-  creds: UserConfigFile,
-  configPath: string = resolveDesktopConfigPath(),
-): DesktopInstallResult {
-  // 1. Install the engine into the per-user prefix (avoids global perms).
+/**
+ * Install (or update) the engine into the per-user Desktop prefix. Shared by
+ * the full install path and by `status --fix`'s drift-repair path (which
+ * needs to force the engine current without redoing the whole install).
+ */
+export function installDesktopEngine(version = "latest"): void {
   mkdirSync(ENGINE_PREFIX, { recursive: true, mode: 0o700 });
   const res = runNpm([
     "install",
-    `${PKG}@latest`,
+    `${PKG}@${version}`,
     "--prefix",
     ENGINE_PREFIX,
     "--no-fund",
@@ -149,6 +150,14 @@ export function installClaudeDesktop(
         `Check network/registry access and retry.`,
     );
   }
+}
+
+export function installClaudeDesktop(
+  creds: UserConfigFile,
+  configPath: string = resolveDesktopConfigPath(),
+): DesktopInstallResult {
+  // 1. Install the engine into the per-user prefix (avoids global perms).
+  installDesktopEngine();
 
   // 2. Write the auto-updating launcher.
   const launcherPath = writeDesktopLauncher();

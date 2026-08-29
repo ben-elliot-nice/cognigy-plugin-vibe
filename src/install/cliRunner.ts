@@ -32,3 +32,18 @@ export function runCliTool(bin: string, absPath: string, args: string[]) {
     shell: isWin,
   });
 }
+
+/** Same as `runCliTool`, but captures stdout/stderr instead of inheriting them
+ *  (used for best-effort reads like `claude plugin list --json`). */
+export function runCliToolCapture(
+  bin: string,
+  absPath: string,
+  args: string[],
+) {
+  const command = isWin ? bin : absPath;
+  return spawnSync(command, isWin ? quoteWinArgs(args) : args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: isWin,
+    encoding: "utf8",
+  });
+}
