@@ -1,6 +1,19 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
+import { mkdtempSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { randomUUID } from "crypto";
 import { CognigyApiClient } from "../api/client.js";
 import { ToolHandlers } from "../tools/handlers.js";
+
+// Isolated per-test snapshot store path — never touch a real machine's
+// ~/.cognigy-plugin write-conflict snapshot file (see writeConflict.test.ts).
+function isolatedSnapshotPath(): string {
+  return join(
+    mkdtempSync(join(tmpdir(), "cognigy-snap-")),
+    `${randomUUID()}.json`,
+  );
+}
 
 const ID = {
   project: "507f1f77bcf86cd799439011",
@@ -32,6 +45,8 @@ describe("manage_webchat", () => {
       api,
       "https://endpoint-trial.cognigy.ai",
       "https://webchat-trial.cognigy.ai",
+      "",
+      isolatedSnapshotPath(),
     );
   });
 
