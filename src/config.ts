@@ -41,6 +41,11 @@ const PACKAGE_VERSION = getPackageVersion();
  * Normalise the API base URL so it always points to the API host.
  * Users may supply the bare UI URL (e.g. https://dev.cognigy.ai) instead of the
  * API URL (https://api-dev.cognigy.ai).  We detect this and prepend "api-".
+ *
+ * NiCE CXone hosts (e.g. https://cognigy-api-au1.nicecxone.com) already carry
+ * the "api-" label and don't end in ".cognigy.ai", so the condition below
+ * leaves them untouched (tolerated, not mangled) rather than double-prefixing
+ * them or misidentifying them as a bare UI URL.
  */
 function normalizeApiBaseUrl(raw: string): string {
   try {
@@ -59,48 +64,81 @@ function normalizeApiBaseUrl(raw: string): string {
 }
 
 /**
- * Derive a sibling base URL from the API base URL by swapping the "api-"
- * segment of the hostname for another one (e.g. "endpoint-", "static-").
- * Handles both bare hosts (api-dev.cognigy.ai) and prefixed tenant hosts
- * (cognigy-api-na1.nicecxone.com -> cognigy-endpoint-na1.nicecxone.com).
+ * Match the "api-" hostname label regardless of any leading subdomain
+ * prefix, so both plain Cognigy SaaS hosts and NiCE CXone hosts resolve:
+ *   api-{env}.cognigy.ai            (prefix "")
+ *   cognigy-api-{env}.nicecxone.com (prefix "cognigy-")
+ * The lookbehind-free form below requires "api-" to sit at the start of the
+ * hostname or immediately after a hyphen, so it won't misfire on unrelated
+ * substrings like "myapi-foo.example.com".
  */
-function deriveHostBaseUrl(apiBaseUrl: string, replacement: string): string {
+const API_HOSTNAME_LABEL = /^(.*-)?api-(.+)$/;
+
+/**
+ * Derive a sibling base URL from the API base URL by swapping the "api-"
+ * hostname label for `targetLabel`, preserving any subdomain prefix before
+ * it (e.g. the "cognigy-" in NiCE CXone hosts) *and* any explicit port
+ * (e.g. ":8443" on a non-standard-port trial host).
+ *
+ * Examples:
+ *   https://api-{env}.cognigy.ai            -> https://{targetLabel}-{env}.cognigy.ai
+ *   https://cognigy-api-{env}.nicecxone.com -> https://cognigy-{targetLabel}-{env}.nicecxone.com
+ *   https://api-{env}.cognigy.ai:8443       -> https://{targetLabel}-{env}.cognigy.ai:8443
+ *
+ * If the host carries no "api-" label at all (e.g. a bespoke on-prem host
+ * that doesn't follow the convention), there is nothing to swap — the
+ * sibling can't be derived, so we return the API URL unchanged and log a
+ * warning rather than guess. Callers who hit this should set the relevant
+ * COGNIGY_*_BASE_URL env var explicitly.
+ */
+function deriveSiblingBaseUrl(apiBaseUrl: string, targetLabel: string): string {
   try {
     const url = new URL(apiBaseUrl);
-    url.hostname = url.hostname.replace(/(^|-)api-/, `$1${replacement}-`);
-    return `${url.protocol}//${url.hostname}`;
+    const match = url.hostname.match(API_HOSTNAME_LABEL);
+    if (match) {
+      const prefix = match[1] ?? "";
+      const port = url.port ? `:${url.port}` : "";
+      return `${url.protocol}//${prefix}${targetLabel}-${match[2]}${port}`;
+    }
+    console.error(
+      `[config] Could not derive ${targetLabel} URL from "${apiBaseUrl}": ` +
+        `hostname has no "api-" label. Using the API URL unchanged — set ` +
+        `the corresponding COGNIGY_*_BASE_URL env var explicitly if this is wrong.`,
+    );
   } catch {
-    // Not a parseable URL: fall back to a host-scoped replace on the
-    // scheme://host portion only, leaving any path/query untouched.
-    const schemeMatch = apiBaseUrl.match(/^([a-z]+:\/\/)([^/?#]*)(.*)$/i);
-    if (!schemeMatch) return apiBaseUrl;
-    const [, scheme, host, rest] = schemeMatch;
-    return `${scheme}${host.replace(/(^|-)api-/, `$1${replacement}-`)}${rest}`;
+    // fall through
   }
+  return apiBaseUrl.replace(/\/(.*-)?api-/, `/$1${targetLabel}-`);
 }
 
 /**
  * Derive the endpoint base URL from the API base URL.
  * Pattern: https://api-{env}.cognigy.ai -> https://endpoint-{env}.cognigy.ai
+ * Also handles NiCE CXone hosts: https://cognigy-api-{env}.nicecxone.com ->
+ * https://cognigy-endpoint-{env}.nicecxone.com
  */
 function deriveEndpointBaseUrl(apiBaseUrl: string): string {
-  return deriveHostBaseUrl(apiBaseUrl, "endpoint");
+  return deriveSiblingBaseUrl(apiBaseUrl, "endpoint");
 }
 
 /**
  * Derive the static-files base URL from the API base URL.
  * Pattern: https://api-{env}.cognigy.ai -> https://static-{env}.cognigy.ai
+ * Also handles NiCE CXone hosts: https://cognigy-api-{env}.nicecxone.com ->
+ * https://cognigy-static-{env}.nicecxone.com
  */
 function deriveStaticFilesBaseUrl(apiBaseUrl: string): string {
-  return deriveHostBaseUrl(apiBaseUrl, "static");
+  return deriveSiblingBaseUrl(apiBaseUrl, "static");
 }
 
 /**
  * Derive the webchat demo base URL from the API base URL.
  * Pattern: https://api-{env}.cognigy.ai -> https://webchat-{env}.cognigy.ai
+ * Also handles NiCE CXone hosts: https://cognigy-api-{env}.nicecxone.com ->
+ * https://cognigy-webchat-{env}.nicecxone.com
  */
 function deriveWebchatBaseUrl(apiBaseUrl: string): string {
-  return deriveHostBaseUrl(apiBaseUrl, "webchat");
+  return deriveSiblingBaseUrl(apiBaseUrl, "webchat");
 }
 
 /**
