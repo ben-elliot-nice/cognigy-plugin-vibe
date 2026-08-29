@@ -65,9 +65,21 @@ describe("cache invalidation on write paths", () => {
       "https://endpoint-trial.cognigy.ai",
       "",
       "",
+      undefined,
       cacheStore,
     );
     api.delete.mockResolvedValueOnce({});
+
+    // main's backup gate (manage_snapshots) holds the first mutating call of
+    // the session when the project is unknown; the retry passes (anti-deadlock).
+    // Prime the gate so the assertions below exercise the real delete path.
+    // NOTE(integration): PR #12 must adopt this on its own branch too — these
+    // tests fail against the gate merged from main on 2026-08-25.
+    const held: any = await h.handleToolCall("delete_resource", {
+      resourceType: "flow",
+      id: ID.flow,
+    });
+    expect(held.error).toBe("backup_not_offered");
 
     const result = await h.handleToolCall("delete_resource", {
       resourceType: "flow",
@@ -92,6 +104,7 @@ describe("cache invalidation on write paths", () => {
       "https://endpoint-trial.cognigy.ai",
       "",
       "",
+      undefined,
       cacheStore,
     );
 
@@ -129,6 +142,13 @@ describe("cache invalidation on write paths", () => {
 
     api.delete.mockResolvedValue({});
 
+    // Prime main's backup gate (see note in the flow-delete test above).
+    const held: any = await h.handleToolCall("delete_resource", {
+      resourceType: "agent",
+      id: ID.agent,
+    });
+    expect(held.error).toBe("backup_not_offered");
+
     const result: any = await h.handleToolCall("delete_resource", {
       resourceType: "agent",
       id: ID.agent,
@@ -150,6 +170,7 @@ describe("cache invalidation on write paths", () => {
       "https://endpoint-trial.cognigy.ai",
       "",
       "",
+      undefined,
       cacheStore,
     );
 
@@ -195,6 +216,7 @@ describe("cache invalidation on write paths", () => {
         "https://endpoint-trial.cognigy.ai",
         "",
         "",
+        undefined,
         cacheStore,
       );
 
