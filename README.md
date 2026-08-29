@@ -8,7 +8,8 @@ A plugin that connects your AI assistant to the [Cognigy.AI](https://www.cognigy
 
 ## Features
 
-- **18 workflow tools** for agent creation, deployment, packaging, backup, voice setup, and live schema introspection
+- **19 workflow tools** for agent creation, deployment, packaging, backup, voice setup, and live schema introspection
+- **Built-in `explain` reference library**: a tiered library of implementation guidance (persona authoring, tool design, flow-chart wiring, code node runtime, voice/xApp behavior, platform resource shapes) compiled into the server itself, so it reaches every client — not just ones that load skills
 - **One-call agent setup**: creates Agent + Flow + AI Agent Job Node + REST Endpoint automatically
 - **Self-improvement loop**: talk to your agent, evaluate responses, update the job description, repeat
 - **Knowledge store support**: attach RAG knowledge stores to agents as tools
@@ -39,6 +40,7 @@ A plugin that connects your AI assistant to the [Cognigy.AI](https://www.cognigy
 | `manage_settings`          | Write | Manage project-level settings including voice preview and Knowledge AI configuration                                                   |
 | `audit_voice_agent`        | Write | Audit a voice agent against the Go-Live Checklist; reports by default, applies safe fixes on demand                                    |
 | `manage_snapshots`         | Write | Create and restore project Snapshots so agent changes can be rolled back                                                               |
+| `explain`                  | Read  | Tiered reference library of implementation guidance — call with no args for the topic index                                            |
 | `describe_resource_schema` | Read  | Look up a resource type's field schema from the live OpenAPI spec, or a flow node type's config schema from the live chart descriptors |
 
 Detailed workflow guidance (agent creation, knowledge/RAG, voice, webchat, flow nodes, packages, settings, LLM providers, tools, troubleshooting) ships as **skills** that load automatically when your request matches, in clients that support them (e.g. Claude Code) — see below.

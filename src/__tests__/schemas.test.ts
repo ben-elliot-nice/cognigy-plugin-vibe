@@ -936,6 +936,22 @@ describe("describeResourceSchemaSchema", () => {
   });
 });
 
+describe("explainSchema", () => {
+  it("accepts no arguments", () => {
+    expect(() => schemas.explainSchema.parse({})).not.toThrow();
+  });
+
+  it("accepts a topic string", () => {
+    expect(() =>
+      schemas.explainSchema.parse({ topic: "aiagent" }),
+    ).not.toThrow();
+  });
+
+  it("rejects a non-string topic", () => {
+    expect(() => schemas.explainSchema.parse({ topic: 123 })).toThrow();
+  });
+});
+
 describe("manageSnapshotsSchema", () => {
   it("accepts list input", () => {
     const result = schemas.manageSnapshotsSchema.parse({
