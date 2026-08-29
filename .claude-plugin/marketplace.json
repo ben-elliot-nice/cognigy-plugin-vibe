@@ -12,6 +12,11 @@
       "name": "cognigy",
       "source": "./plugin",
       "description": "NiCE Cognigy Plugin — build, test, and deploy AI Agents on the NiCE Cognigy platform"
+    },
+    {
+      "name": "design-forge",
+      "source": "./design-forge",
+      "description": "Modular design-artefact authoring for Cognigy AI agents"
     }
   ]
 }

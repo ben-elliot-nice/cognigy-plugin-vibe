@@ -1,0 +1,13 @@
+{
+  "name": "design-forge",
+  "description": "Modular design-artefact authoring for Cognigy AI agents — one skill per design domain",
+  "version": "0.1.0",
+  "author": {
+    "name": "Cognigy",
+    "url": "https://www.cognigy.com"
+  },
+  "homepage": "https://www.cognigy.com",
+  "repository": "https://github.com/Cognigy/cognigy-plugin",
+  "license": "MIT",
+  "keywords": ["cognigy", "ai-agents", "design", "skills", "nice"]
+}
