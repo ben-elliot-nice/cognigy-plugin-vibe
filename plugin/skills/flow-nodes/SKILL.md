@@ -229,6 +229,8 @@ Server-computed, read-only (do NOT send these): `transpiled` (compiled JS output
 
 Then send the full new `code` string on `update` (config is merged; `code` is replaced wholesale). After a write, a `_hints.warning` with `hasError` means the code did not compile — `get`, fix, and update again.
 
+**Local file push (avoids regenerating the whole script every edit):** instead of inlining the full script in `config.code`, maintain it as a local file and pass `filePath` (an absolute path) on `create`/`update` — the server reads it and pushes its content as `config.code`. This is local-only: it requires the MCP server to have filesystem access to that path (true for Claude Code's local npx launch, not for a remote/server-hosted MCP). Provide exactly one of `config.code` or `filePath`. The same `filePath` mechanism also covers xApp HTML nodes (`showXAppHtml` → `config.html`) and, on `create_tool`/`update_tool`, a tool's `parameters` JSON Schema via `parametersFilePath`.
+
 **Create example:**
 
 ```json

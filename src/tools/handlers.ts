@@ -24,6 +24,7 @@ import {
 } from "./filters.js";
 import { buildWebchatSettings, deepMerge } from "./webchatSettings.js";
 import { getNodeEntry, supportedNodeTypes } from "./nodeRegistry.js";
+import { resolveContent } from "./filePush.js";
 import {
   normalizeSayConfig,
   ensureToolAnswer,
@@ -250,6 +251,17 @@ function buildRichSayObject(
     _data: { _cognigy: { _default: channelData } },
   };
 }
+
+// manage_flow_nodes `filePath` ergonomic: node types (keyed by their raw API
+// `type`, i.e. the value entry.type resolves to / existingNode.type reports)
+// that carry exactly one large, frequently-regenerated content field. A
+// filePath pushed against one of these reads the local file and drops its
+// content into the named config field instead of requiring the caller to
+// inline the whole thing on every edit.
+const FILE_PUSH_TARGETS: Record<string, { field: string }> = {
+  code: { field: "code" },
+  setHTMLAppState: { field: "html" },
+};
 
 function transformConfigForApi(
   nodeType: string,
@@ -3057,7 +3069,34 @@ export class ToolHandlers {
       );
     }
 
-    const cfg = data.config;
+    const cfg = { ...data.config };
+    if (data.parametersFilePath) {
+      if (cfg.parameters !== undefined) {
+        return withHints(
+          {
+            error:
+              "Provide exactly one of config.parameters or parametersFilePath, not both.",
+          },
+          {
+            action: "Remove either config.parameters or parametersFilePath.",
+          },
+        );
+      }
+      const resolvedParameters = await resolveContent({
+        filePath: data.parametersFilePath,
+        kind: "json",
+      });
+      if (resolvedParameters.error) {
+        return withHints(
+          { error: resolvedParameters.error },
+          {
+            action:
+              "parametersFilePath requires the MCP server to have local filesystem access to this path (e.g. Claude Code's local npx launch). Verify the path exists and is readable, or pass config.parameters inline instead.",
+          },
+        );
+      }
+      cfg.parameters = resolvedParameters.content;
+    }
     const requestedToolId =
       typeof cfg.toolId === "string" && cfg.toolId.trim().length > 0
         ? cfg.toolId.trim()
@@ -3367,16 +3406,50 @@ export class ToolHandlers {
     }
     const { flowId } = resolved;
 
-    if (!data.name && !data.config) {
+    if (!data.name && !data.config && !data.parametersFilePath) {
       return withHints(
-        { error: "Nothing to update. Provide at least name or config." },
+        {
+          error:
+            "Nothing to update. Provide at least name, config, or parametersFilePath.",
+        },
         { action: "Include fields to update in the request." },
       );
     }
 
     const updatedFields: string[] = [];
-    const cfg = data.config;
+    const cfg =
+      data.config || data.parametersFilePath
+        ? { ...(data.config ?? {}) }
+        : undefined;
     const toolType = data.toolType;
+
+    if (data.parametersFilePath && cfg) {
+      if (cfg.parameters !== undefined) {
+        return withHints(
+          {
+            error:
+              "Provide exactly one of config.parameters or parametersFilePath, not both.",
+          },
+          {
+            action: "Remove either config.parameters or parametersFilePath.",
+          },
+        );
+      }
+      const resolvedParameters = await resolveContent({
+        filePath: data.parametersFilePath,
+        kind: "json",
+      });
+      if (resolvedParameters.error) {
+        return withHints(
+          { error: resolvedParameters.error },
+          {
+            action:
+              "parametersFilePath requires the MCP server to have local filesystem access to this path (e.g. Claude Code's local npx launch). Verify the path exists and is readable, or pass config.parameters inline instead.",
+          },
+        );
+      }
+      cfg.parameters = resolvedParameters.content;
+    }
 
     // Detect whether config contains HTTP child-node fields
     const hasHttpUpdates =
@@ -3686,7 +3759,45 @@ export class ToolHandlers {
           );
         }
 
-        const cfg = data.config ?? {};
+        const cfg = { ...(data.config ?? {}) };
+
+        if (data.filePath) {
+          const target = FILE_PUSH_TARGETS[entry.type];
+          if (!target) {
+            return withHints(
+              {
+                error: `filePath is not supported for nodeType "${data.nodeType}". It only applies to code nodes (config.code) and xApp HTML nodes (showXAppHtml → config.html).`,
+              },
+              {
+                action:
+                  "Pass the content inline via config instead, or omit filePath.",
+              },
+            );
+          }
+          if (cfg[target.field] !== undefined) {
+            return withHints(
+              {
+                error: `Provide exactly one of config.${target.field} or filePath, not both.`,
+              },
+              { action: `Remove either config.${target.field} or filePath.` },
+            );
+          }
+          const resolved = await resolveContent({
+            filePath: data.filePath,
+            kind: "text",
+          });
+          if (resolved.error) {
+            return withHints(
+              { error: resolved.error },
+              {
+                action:
+                  "filePath requires the MCP server to have local filesystem access to this path (e.g. Claude Code's local npx launch). Verify the path exists and is readable, or pass the content inline instead.",
+              },
+            );
+          }
+          cfg[target.field] = resolved.content;
+        }
+
         const aliasMap: Record<string, string[]> = {
           milliseconds: ["milliseconds", "delay"],
           key: ["key", "contextEntries"],
@@ -3776,15 +3887,17 @@ export class ToolHandlers {
         // Forgiving-input normalisation (migration item #10): lift a bare
         // config.text on a say node into the config.say.text envelope before
         // the general-purpose transformConfigForApi runs. Idempotent against
-        // configs that already carry a say object.
+        // configs that already carry a say object. Runs on `cfg` so it also
+        // covers content resolved from filePath.
         const normalizedConfig =
-          entry.type === "say" && data.config
-            ? normalizeSayConfig(data.config)
-            : data.config;
+          entry.type === "say" && Object.keys(cfg).length > 0
+            ? (normalizeSayConfig(cfg) ?? cfg)
+            : cfg;
 
-        const apiConfig = normalizedConfig
-          ? transformConfigForApi(entry.type, normalizedConfig)
-          : undefined;
+        const apiConfig =
+          Object.keys(normalizedConfig).length > 0
+            ? transformConfigForApi(entry.type, normalizedConfig)
+            : undefined;
 
         const createdNode: any = await this.apiClient.post(
           `/v2.0/flows/${flowId}/chart/nodes`,
@@ -3830,7 +3943,7 @@ export class ToolHandlers {
           ...(actualParentId ? { parentId: actualParentId } : {}),
           targetNodeId,
           mode,
-          configApplied: data.config ? Object.keys(data.config) : [],
+          configApplied: Object.keys(cfg),
         };
 
         if (missingInitAppSession) {
@@ -3861,9 +3974,12 @@ export class ToolHandlers {
           );
         }
 
-        if (!data.config && !data.label) {
+        if (!data.config && !data.label && !data.filePath) {
           return withHints(
-            { error: "Nothing to update. Provide at least label or config." },
+            {
+              error:
+                "Nothing to update. Provide at least label, config, or filePath.",
+            },
             { action: "Include fields to update in the request." },
           );
         }
@@ -3873,8 +3989,9 @@ export class ToolHandlers {
         // (see getConflictFieldSpec) — used after a successful PATCH to
         // refresh the snapshot of "what we last pushed".
         let conflictSpec: ConflictFieldSpec | null = null;
+        let configFieldsUpdated: string[] = [];
         if (data.label) patchPayload.label = data.label;
-        if (data.config) {
+        if (data.config || data.filePath) {
           const existingNode: any = await this.apiClient.get(
             `/v2.0/flows/${flowId}/chart/nodes/${data.nodeId}`,
           );
@@ -3892,17 +4009,60 @@ export class ToolHandlers {
             delete existingConfig.mock.hasError;
           }
 
+          let mergedConfig = { ...(data.config ?? {}) };
+
+          if (data.filePath) {
+            const target = FILE_PUSH_TARGETS[nodeType];
+            if (!target) {
+              return withHints(
+                {
+                  error: `filePath is not supported for node type "${nodeType}". It only applies to code nodes (config.code) and xApp HTML nodes (setHTMLAppState → config.html).`,
+                },
+                {
+                  action:
+                    "Pass the content inline via config instead, or omit filePath.",
+                },
+              );
+            }
+            if (mergedConfig[target.field] !== undefined) {
+              return withHints(
+                {
+                  error: `Provide exactly one of config.${target.field} or filePath, not both.`,
+                },
+                {
+                  action: `Remove either config.${target.field} or filePath.`,
+                },
+              );
+            }
+            const resolved = await resolveContent({
+              filePath: data.filePath,
+              kind: "text",
+            });
+            if (resolved.error) {
+              return withHints(
+                { error: resolved.error },
+                {
+                  action:
+                    "filePath requires the MCP server to have local filesystem access to this path (e.g. Claude Code's local npx launch). Verify the path exists and is readable, or pass the content inline instead.",
+                },
+              );
+            }
+            mergedConfig[target.field] = resolved.content;
+          }
+
+          configFieldsUpdated = Object.keys(mergedConfig);
+
           // Handle case node updates — the Cognigy API expects exactly
           // { config: { case: { value: "..." } } } with no extra fields merged in.
           if (nodeType === "case") {
-            if (data.config.value !== undefined) {
-              patchPayload.config = { case: { value: data.config.value } };
+            if (mergedConfig.value !== undefined) {
+              patchPayload.config = { case: { value: mergedConfig.value } };
             }
           }
           // Handle switch node updates — if cases array is provided, patch each
           // child case node with its value, then update the switch node itself.
-          else if (nodeType === "switch" && Array.isArray(data.config.cases)) {
-            const casesToUpdate = data.config.cases;
+          else if (nodeType === "switch" && Array.isArray(mergedConfig.cases)) {
+            const casesToUpdate = mergedConfig.cases;
             const caseResults: any[] = [];
             for (const c of casesToUpdate) {
               if (!c.id || c.value === undefined) continue;
@@ -3922,7 +4082,7 @@ export class ToolHandlers {
               }
             }
             // Update the switch node itself (without the cases array)
-            const { cases: _cases, ...switchConfig } = data.config;
+            const { cases: _cases, ...switchConfig } = mergedConfig;
             if (Object.keys(switchConfig).length > 0) {
               const transformed = transformConfigForApi(nodeType, switchConfig);
               patchPayload.config = deepMerge(existingConfig, transformed);
@@ -3938,8 +4098,8 @@ export class ToolHandlers {
                 updated: true,
                 nodeId: data.nodeId,
                 ...(data.label ? { label: data.label } : {}),
-                ...(data.config
-                  ? { configUpdated: Object.keys(data.config) }
+                ...(Object.keys(mergedConfig).length > 0
+                  ? { configUpdated: Object.keys(mergedConfig) }
                   : {}),
                 casesUpdated: caseResults,
               },
@@ -3952,7 +4112,7 @@ export class ToolHandlers {
             // Inject the canonical answer only if it's still missing after
             // merging with the existing saved config — never clobber a real
             // answer expression the node already has.
-            const transformed = transformConfigForApi(nodeType, data.config);
+            const transformed = transformConfigForApi(nodeType, mergedConfig);
             const merged = deepMerge(existingConfig, transformed);
             patchPayload.config = ensureToolAnswer(merged);
           } else {
@@ -3962,8 +4122,8 @@ export class ToolHandlers {
             // carry a say object.
             const normalizedConfig: Record<string, any> =
               nodeType === "say"
-                ? (normalizeSayConfig(data.config) ?? data.config)
-                : data.config;
+                ? (normalizeSayConfig(mergedConfig) ?? mergedConfig)
+                : mergedConfig;
             const transformed = transformConfigForApi(
               nodeType,
               normalizedConfig,
@@ -4020,13 +4180,15 @@ export class ToolHandlers {
           updated: true,
           nodeId: data.nodeId,
           ...(data.label ? { label: data.label } : {}),
-          ...(data.config ? { configUpdated: Object.keys(data.config) } : {}),
+          ...(configFieldsUpdated.length > 0
+            ? { configUpdated: configFieldsUpdated }
+            : {}),
         };
 
         // The PATCH response echoes the input config without the server-computed
         // `hasError` (transpilation runs after the write). When code was edited,
         // read the node back to detect a transpile failure and surface it.
-        if (data.config?.code !== undefined) {
+        if (patchPayload.config?.code !== undefined) {
           try {
             const saved: any = await this.apiClient.get(
               `/v2.0/flows/${flowId}/chart/nodes/${data.nodeId}`,
