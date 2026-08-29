@@ -1,4 +1,5 @@
 import { ReadStream } from "fs";
+import https from "https";
 import axios, {
   AxiosError,
   AxiosInstance,
@@ -6,6 +7,7 @@ import axios, {
   AxiosResponse,
 } from "axios";
 import FormData from "form-data";
+import { getCachedCaBundle } from "./caBundle.js";
 import { logger } from "../utils/logger.js";
 
 export interface CognigyApiClientConfig {
@@ -101,6 +103,18 @@ export class CognigyApiClient {
 
   constructor(config: CognigyApiClientConfig) {
     this.apiKey = config.apiKey;
+
+    // Corporate TLS-inspecting proxies (Fortinet/Zscaler/NICE SSL
+    // inspection) re-sign outbound HTTPS with a private CA that Node
+    // doesn't trust by default. Resolve a corporate CA bundle the same way
+    // cognigy-vibe's `truststore` dependency does for Python — see
+    // src/api/caBundle.ts for the resolution order. `ca: undefined` leaves
+    // Node's default trust store untouched.
+    const { ca, source } = getCachedCaBundle();
+    if (ca) {
+      logger.debug(`API client: TLS trust store source = ${source}`);
+    }
+
     this.client = axios.create({
       baseURL: config.baseUrl,
       headers: {
@@ -108,6 +122,7 @@ export class CognigyApiClient {
         Accept: "application/json",
       },
       timeout: 30000,
+      httpsAgent: new https.Agent({ ca }),
     });
 
     this.client.interceptors.request.use(
