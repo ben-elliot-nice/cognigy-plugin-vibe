@@ -9,6 +9,7 @@ import {
 
 import { loadServerMeta, buildSetupGuidance } from "./config.js";
 import { tools } from "./tools/definitions.js";
+import { buildToolList } from "./tools/devTools.js";
 import { SERVER_INSTRUCTIONS } from "./instructions.js";
 import { logger } from "./utils/logger.js";
 import { RuntimeManager } from "./runtime.js";
@@ -48,7 +49,11 @@ async function main() {
       },
     );
 
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+    // buildToolList() only adds dev-only tools (e.g. reload_mcp) when
+    // COGNIGY_DEV=1 — production runs get exactly `tools`, unchanged.
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: buildToolList(tools),
+    }));
 
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;

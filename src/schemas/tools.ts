@@ -760,3 +760,5 @@ export const describeResourceSchemaSchema = z
       path: ["resourceType"],
     },
   );
+// Dev-only tool: reload_mcp
+export const reloadMcpSchema = z.object({});
