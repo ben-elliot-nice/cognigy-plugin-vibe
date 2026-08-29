@@ -75,6 +75,21 @@ import {
   simplifyDescriptorFields,
   type SchemaOperation,
 } from "./schemaIntrospection.js";
+import { CacheStore } from "../cache/cacheStore.js";
+
+// Resource types cached by handleGetResource. Deliberately excludes anything
+// that changes within a single conversation (conversation, session_state) —
+// only reference-data GETs are cache-first.
+const CACHEABLE_GET_RESOURCE_TYPES = new Set([
+  "agent",
+  "flow",
+  "endpoint",
+  "project",
+  "llm_model",
+  "knowledge_store",
+  "extension",
+  "function",
+]);
 
 // The self-contained mermaid UMD build, inlined into rich flow-viz HTML so it
 // renders offline. Copied to dist/assets at build time (scripts/copy-assets.mjs);
@@ -601,12 +616,27 @@ const PROVIDER_CONNECTION_TYPE: Record<string, string> = {
 async function resolveFlowForAgent(
   apiClient: CognigyApiClient,
   agentId: string,
+  cacheStore?: CacheStore,
 ): Promise<{ flowId: string; agent: any } | null> {
-  const agent: any = await apiClient.get(`/v2.0/aiagents/${agentId}`);
+  const agent: any = cacheStore
+    ? await cacheStore.getOrFetch("agent", agentId, () =>
+        apiClient.get(`/v2.0/aiagents/${agentId}`),
+      )
+    : await apiClient.get(`/v2.0/aiagents/${agentId}`);
+
+  // Cached mapping from a previous resolution — skip the (potentially
+  // multi-request) strategies below entirely on a hit.
+  const cachedFlowId = cacheStore?.resolveId("agentFlow", agentId);
+  if (cachedFlowId) return { flowId: cachedFlowId, agent };
+
+  const remember = (flowId: string) => {
+    cacheStore?.rememberId("agentFlow", agentId, flowId);
+    return { flowId, agent };
+  };
 
   // Strategy 1: direct field
   const directId = agent.flowId || agent.flow?._id || agent.flow?.id;
-  if (directId) return { flowId: directId, agent };
+  if (directId) return remember(directId);
 
   // Strategy 2: /jobs endpoint — returns nodes referencing this agent
   try {
@@ -614,7 +644,7 @@ async function resolveFlowForAgent(
     const items = jobs.items ?? jobs;
     if (Array.isArray(items) && items.length > 0) {
       const flowId = items[0].flowId || items[0].flow?._id || items[0].parentId;
-      if (flowId) return { flowId, agent };
+      if (flowId) return remember(flowId);
     }
   } catch {
     // endpoint may not exist on all versions — fall through
@@ -627,16 +657,18 @@ async function resolveFlowForAgent(
     agent.project?._id ||
     agent.project?.id;
   if (projectId) {
+    const flowName = `${agent.name} Flow`;
+    const cachedByName = cacheStore?.resolveId("flow", flowName);
+    if (cachedByName) return remember(cachedByName);
+
     try {
       const flows: any = await apiClient.get("/v2.0/flows", {
         params: { projectId, limit: 100 },
       });
       const flowItems = flows.items ?? flows;
       if (Array.isArray(flowItems)) {
-        const match = flowItems.find(
-          (f: any) => f.name === `${agent.name} Flow`,
-        );
-        if (match) return { flowId: match._id || match.id, agent };
+        const match = flowItems.find((f: any) => f.name === flowName);
+        if (match) return remember(match._id || match.id);
 
         // Last resort: scan all flows for an aiAgentJob node referencing this agent
         for (const f of flowItems) {
@@ -654,7 +686,7 @@ async function resolveFlowForAgent(
                 n.type === "aiAgentJob" &&
                 n.config?.aiAgent === agent.referenceId,
             );
-            if (jobNode) return { flowId: fid, agent };
+            if (jobNode) return remember(fid);
           } catch {
             // skip flows we can't read
           }
@@ -845,6 +877,7 @@ export class ToolHandlers {
     private webchatBaseUrl: string = "",
     private staticFilesBaseUrl: string = "",
     snapshotStorePath?: string,
+    private cacheStore?: CacheStore,
   ) {
     this.snapshotStore = new SnapshotStore(snapshotStorePath);
   }
@@ -1851,6 +1884,7 @@ export class ToolHandlers {
         agentPayload,
       );
       updatedParts.push("agent");
+      this.cacheStore?.invalidate("agent", aiAgentId);
     }
 
     // Step 2: Patch AI Agent Job Node config if any job-level fields provided
@@ -1866,7 +1900,11 @@ export class ToolHandlers {
 
     let jobNodeResult: any;
     if (needsJobPatch || needsPreviewPatch) {
-      const resolved = await resolveFlowForAgent(this.apiClient, aiAgentId);
+      const resolved = await resolveFlowForAgent(
+        this.apiClient,
+        aiAgentId,
+        this.cacheStore,
+      );
       if (!resolved) {
         if (needsJobPatch) {
           return withHints(
@@ -2226,6 +2264,7 @@ export class ToolHandlers {
       const resolved = await resolveFlowForAgent(
         this.apiClient,
         data.aiAgentId,
+        this.cacheStore,
       );
       if (!resolved) {
         return withHints(
@@ -2541,7 +2580,11 @@ export class ToolHandlers {
         break;
       }
       case "tool": {
-        const resolved = await resolveFlowForAgent(this.apiClient, aiAgentId!);
+        const resolved = await resolveFlowForAgent(
+          this.apiClient,
+          aiAgentId!,
+          this.cacheStore,
+        );
         if (!resolved) {
           return withHints(
             { error: "Could not find a flow associated with this agent." },
@@ -2578,6 +2621,22 @@ export class ToolHandlers {
     }
 
     if (!Array.isArray(items)) items = [];
+
+    // Opportunistically remember name->id for resource types callers commonly
+    // look up by name (e.g. resolveFlowForAgent's flow-by-name strategy), so a
+    // later lookup can skip the API round trip entirely.
+    if (
+      this.cacheStore &&
+      (resourceType === "agent" || resourceType === "flow")
+    ) {
+      for (const item of items) {
+        const itemId = item?._id || item?.id;
+        if (item?.name && itemId) {
+          this.cacheStore.rememberId(resourceType, item.name, itemId);
+        }
+      }
+    }
+
     const filtered =
       resourceType === "tool" ? items : filterList(resourceType, items);
 
@@ -2638,7 +2697,19 @@ export class ToolHandlers {
     const url = endpointMap[resourceType];
     if (!url) throw new Error(`Unknown resourceType: ${resourceType}`);
 
-    const result = await this.apiClient.get(url);
+    // Cache-first for stable reference data; skip when `raw` was requested
+    // (callers asking for the unfiltered API body want the live shape) and
+    // for resource types that change within a session (conversation, session
+    // state).
+    const useCache =
+      !raw &&
+      !!this.cacheStore &&
+      CACHEABLE_GET_RESOURCE_TYPES.has(resourceType);
+    const result = useCache
+      ? await this.cacheStore!.getOrFetch(resourceType, id, () =>
+          this.apiClient.get(url),
+        )
+      : await this.apiClient.get(url);
     if (raw) return result;
 
     const filtered = RESOURCE_FILTERS_GET[resourceType]
@@ -2674,7 +2745,11 @@ export class ToolHandlers {
           },
         );
       }
-      const resolved = await resolveFlowForAgent(this.apiClient, aiAgentId);
+      const resolved = await resolveFlowForAgent(
+        this.apiClient,
+        aiAgentId,
+        this.cacheStore,
+      );
       if (!resolved) {
         return withHints(
           { error: "Could not find a flow associated with this agent." },
@@ -2694,6 +2769,7 @@ export class ToolHandlers {
     if (resourceType === "agent") {
       if (cascade === false) {
         await this.apiClient.delete(`/v2.0/aiagents/${id}`);
+        this.cacheStore?.invalidate("agent", id);
         return { deleted: true, resourceType, id };
       }
       return this.cascadeDeleteAgent(id);
@@ -2711,6 +2787,16 @@ export class ToolHandlers {
     if (!url) throw new Error(`Unknown resourceType: ${resourceType}`);
 
     await this.apiClient.delete(url);
+    // A mutation must never be masked by a stale cache entry.
+    this.cacheStore?.invalidate(resourceType, id);
+    if (resourceType === "flow") {
+      // Deleting a flow directly (not via agent cascade) must also drop any
+      // name->id mapping pointing at it — both the "flow" name->id entry
+      // itself and any agent's cached "agentFlow" resolution — or a later
+      // lookup keeps resolving to a flow that no longer exists.
+      this.cacheStore?.forgetIdByValue("flow", id);
+      this.cacheStore?.forgetIdByValue("agentFlow", id);
+    }
     return { deleted: true, resourceType, id };
   }
 
@@ -2725,7 +2811,11 @@ export class ToolHandlers {
     const deleted: string[] = [];
     const failed: { resource: string; error: string }[] = [];
 
-    const resolved = await resolveFlowForAgent(this.apiClient, agentId);
+    const resolved = await resolveFlowForAgent(
+      this.apiClient,
+      agentId,
+      this.cacheStore,
+    );
     const agent = resolved?.agent;
     const flowId = resolved?.flowId;
     const projectId =
@@ -2761,6 +2851,7 @@ export class ToolHandlers {
                 try {
                   await this.apiClient.delete(`/v2.0/endpoints/${epId}`);
                   deleted.push(`endpoint:${epId}`);
+                  this.cacheStore?.invalidate("endpoint", epId);
                 } catch (e: any) {
                   failed.push({
                     resource: `endpoint:${epId}`,
@@ -2791,6 +2882,8 @@ export class ToolHandlers {
       try {
         await this.apiClient.delete(`/v2.0/flows/${flowId}`);
         deleted.push(`flow:${flowId}`);
+        this.cacheStore?.invalidate("flow", flowId);
+        this.cacheStore?.forgetIdByValue("flow", flowId);
       } catch (e: any) {
         failed.push({
           resource: `flow:${flowId}`,
@@ -2803,6 +2896,8 @@ export class ToolHandlers {
     try {
       await this.apiClient.delete(`/v2.0/aiagents/${agentId}`);
       deleted.push(`agent:${agentId}`);
+      this.cacheStore?.invalidate("agent", agentId);
+      this.cacheStore?.forgetId("agentFlow", agentId);
     } catch (e: any) {
       failed.push({
         resource: `agent:${agentId}`,
@@ -2916,6 +3011,9 @@ export class ToolHandlers {
             `/v2.0/knowledgestores/${storeId}/sources/upload`,
             form,
           );
+          // Adding a source changes the store's sourceCount — never let a
+          // cached knowledge_store read mask it.
+          this.cacheStore?.invalidate("knowledge_store", storeId);
 
           return withHints(
             {
@@ -2956,6 +3054,7 @@ export class ToolHandlers {
             `/v2.0/knowledgestores/${storeId}/sources`,
             payload,
           );
+          this.cacheStore?.invalidate("knowledge_store", storeId);
           return withHints(
             {
               source: {
@@ -2999,6 +3098,7 @@ export class ToolHandlers {
           `/v2.0/knowledgestores/${storeId}/sources/${sourceId}/chunks`,
           { text: data.text, order: 1 },
         );
+        this.cacheStore?.invalidate("knowledge_store", storeId);
 
         return withHints(
           {
@@ -3102,7 +3202,11 @@ export class ToolHandlers {
     const data = schemas.createToolSchema.parse(args);
 
     // Step 1: Resolve the agent's flow
-    const resolved = await resolveFlowForAgent(this.apiClient, data.aiAgentId);
+    const resolved = await resolveFlowForAgent(
+      this.apiClient,
+      data.aiAgentId,
+      this.cacheStore,
+    );
     if (!resolved) {
       return withHints(
         { error: "Could not find a flow associated with this agent." },
@@ -3465,7 +3569,11 @@ export class ToolHandlers {
   async handleUpdateTool(args: any): Promise<any> {
     const data = schemas.updateToolSchema.parse(args);
 
-    const resolved = await resolveFlowForAgent(this.apiClient, data.aiAgentId);
+    const resolved = await resolveFlowForAgent(
+      this.apiClient,
+      data.aiAgentId,
+      this.cacheStore,
+    );
     if (!resolved) {
       return withHints(
         { error: "Could not find a flow associated with this agent." },
@@ -4568,6 +4676,7 @@ export class ToolHandlers {
       if (data.flowId) patchPayload.flowId = data.flowId;
 
       await this.apiClient.patch(`/v2.0/endpoints/${endpointId}`, patchPayload);
+      this.cacheStore?.invalidate("endpoint", endpointId!);
       const endpoint: any = await this.apiClient.get(
         `/v2.0/endpoints/${endpointId}`,
       );
@@ -4875,6 +4984,7 @@ export class ToolHandlers {
         `/new/v2.0/endpoints/${endpointId}`,
         patchPayload,
       );
+      this.cacheStore?.invalidate("endpoint", endpointId!);
       endpoint = await this.apiClient.get(`/new/v2.0/endpoints/${endpointId}`);
 
       return this.buildVoiceGatewayResponse({
@@ -5156,7 +5266,11 @@ export class ToolHandlers {
     // Resolve the flow to audit.
     let flowId = data.flowId;
     if (!flowId) {
-      const resolved = await resolveFlowForAgent(this.apiClient, aiAgentId!);
+      const resolved = await resolveFlowForAgent(
+        this.apiClient,
+        aiAgentId!,
+        this.cacheStore,
+      );
       if (!resolved) {
         return withHints(
           { error: "Could not resolve a flow for this agent." },

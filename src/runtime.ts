@@ -13,6 +13,9 @@ import { Config, tryLoadConfig } from "./config.js";
 import { CognigyApiClient } from "./api/client.js";
 import { ToolHandlers } from "./tools/handlers.js";
 import { RateLimiter } from "./utils/rateLimiter.js";
+import { CacheStore, projectKeyFromApiBaseUrl } from "./cache/cacheStore.js";
+import { USER_CONFIG_DIR } from "./userConfigFile.js";
+import { join } from "path";
 
 export interface Runtime {
   config: Config;
@@ -51,11 +54,22 @@ export class RuntimeManager {
       baseUrl: config.apiBaseUrl,
       apiKey: config.apiKey,
     });
+    // Opt-in persistent read cache + name->id resolution (migration-docs
+    // item #4), scoped per API base URL so multiple Cognigy projects/orgs
+    // on one machine don't share (or invalidate) each other's cache.
+    const cacheStore = config.cacheEnabled
+      ? new CacheStore({
+          baseDir: join(USER_CONFIG_DIR, "cache"),
+          projectKey: projectKeyFromApiBaseUrl(config.apiBaseUrl),
+        })
+      : undefined;
     const toolHandlers = new ToolHandlers(
       apiClient,
       config.endpointBaseUrl,
       config.webchatBaseUrl,
       config.staticFilesBaseUrl,
+      undefined,
+      cacheStore,
     );
     const rateLimiter = new RateLimiter(config.rateLimit);
 
