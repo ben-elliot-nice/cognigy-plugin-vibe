@@ -84,6 +84,36 @@ Endpoints under `/v2.0/flows/{flowId}/chart`:
 - **`GET /chart/nodes` returns no `config` and no ordering** (only id/type/label/preview/isEntryPoint/parentId). `GET /chart` returns node excerpts + relations. Full `config` only from the per-node `GET /chart/nodes/{id}`.
 - **`preview` is server-computed, never stored.** A config PATCH that omits `aiAgent` makes the backend recompute `preview` as a bare string (the node name), wiping the avatar. **Never hand-craft `preview`; always re-send `config.aiAgent` in any aiAgentJob config PATCH.**
 
+## Fork workflow — keeping fork-only commits out of upstream PRs
+
+This repo is a fork (`ben-elliot-nice/cognigy-plugin-vibe`) of the official
+`Cognigy/cognigy-plugin`, run mostly independently for the team but intended
+to contribute genuinely cross-cutting work back upstream. `main` is the
+fork's own integration branch and can carry fork-only commits (e.g.
+`FORK-CONTEXT.md` at the repo root — see its banner). Never branch upstream
+contribution work from `main`.
+
+**Always cut upstream-bound branches from `upstream/main`, not `main`:**
+
+```
+git fetch upstream
+git checkout -b feature/some-upstream-thing upstream/main
+```
+
+A branch rooted at `upstream/main` never has fork-only commits as ancestors —
+they were never there, so there's nothing to strip later. Add only the
+specific commits you want to propose (write them fresh on the branch, or
+`git cherry-pick <sha>` from `main` for a commit that's also upstream-worthy).
+
+If a fork-only commit ever does end up as an ancestor of a branch bound for
+upstream (e.g. it was cut from `main` by mistake), fix it before opening the
+PR — don't rely on review to catch it:
+
+- `git rebase -i upstream/main` and drop that commit's line, or
+- `git rebase --onto upstream/main <commit-before-it> <branch>`, or
+- abandon the branch and cherry-pick the wanted commits onto a fresh one cut
+  from `upstream/main`.
+
 ## Commands
 
 - Typecheck: `npx tsc -p tsconfig.json --noEmit`
