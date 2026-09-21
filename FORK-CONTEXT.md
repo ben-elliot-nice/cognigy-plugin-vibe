@@ -92,6 +92,13 @@ manage` alone — that didn't visibly do anything for us) to set
   `submit-issue`, the explain-corpus sort, a second look at
   `design-agent-contracts`/`design-agent-interfaces` for generalizable
   patterns, an `instructions.ts` audit, and a tier-3 lookup-tool proposal.
+  Grew to 30 items same day once the explain-corpus sort landed (see below).
+- Default table view (`View 1`) is set to show only **Title, Status, Track**
+  — every other field (Assignees, Labels, Linked PRs, Milestone, Repository,
+  Reviewers, Parent issue, Sub-issues progress, Created/Updated/Closed) is
+  hidden via `updateProjectV2View`'s `configuration.visibleFieldIds` (not
+  exposed by any `gh project` subcommand — had to hit the GraphQL mutation
+  directly; view id `PVTV_lAHOBkukW84BkJ0HzgLvEt8`).
 
 ## Contributor skills read in full (2026-09-21)
 
@@ -128,8 +135,9 @@ Both read before any code changes, per project convention:
 ## Skill migration map (`cognigy-vibe` → upstream) — not yet executed
 
 - `voice-go-live-checklist` — already upstream, roughly 1:1.
-- `explain` — superseded; sort in progress via the four-bucket method (see
-  tracker board "Sort and retire the vibe explain corpus").
+- `explain` — superseded; sort **done** 2026-09-21 via the four-bucket method
+  (see "Explain-corpus sort — status" below for the full outcome and what's
+  still open).
 - `init-cognigy-vibe` — superseded by the `cognigy-setup` installer CLI.
 - `build-orchestrator`, `scope-demo`, `design-agent*`, `build-config` —
   sales/demo-scaffolding, no upstream equivalent. Decide per-skill: rewrite
@@ -137,12 +145,85 @@ Both read before any code changes, per project convention:
 - `submit-issue` — needs repointing at the tracker board above instead of
   GitHub Issues (tracked).
 
-## Next planned step (not started as of this writing)
+## Explain-corpus sort — status (done 2026-09-21)
 
-Step 6 of the original session plan: go through
-`cognigy-vibe/plugin/skills/explain/resources/` topic by topic (grouped by
-aiagent/code/nodes/platform/voice/xapp), classify each into one of the four
-buckets (mechanically enforceable → Zod constraint; severe+cross-cutting →
-`src/instructions.ts`; workflow-scoped → merge into matching upstream skill;
-genuine leftover → tier-3 lookup-tool candidate), and log outcomes to the
-tracker board as we go, not batched to the end.
+**The sort itself is complete and logged.** Source corpus was 51 topic files
+under
+`~/.claude/plugins/marketplaces/cognigy-vibe/plugin/skills/explain/resources/`
+(v1.7.4 cache copy — identical to `~/scratch/cognigy-plugin-comparison/cognigy-vibe`;
+note the path in the original session brief,
+`cognigy-vibe/plugin/skills/explain/resources/` relative to `~/repos/`, does
+**not** exist — that repo isn't cloned at `~/repos/cognigy-vibe`, use one of
+the two paths above instead).
+
+Ran as a background fork (`Agent` tool, `subagent_type: "fork"`) rather than
+inline, given the volume. Headline finding: **~24 of 51 topics were flatly
+obsolete** — written against the old Python engine's generic
+`cognigy_create`/`cognigy_get`/`resolve_resource` API, which has no
+equivalent in this TypeScript engine. Many of the old corpus's hard-won
+gotchas turned out to already be solved _in code_, not docs (e.g. placeholder-tool
+cleanup, partial-field-update semantics, httpRequest wrapper-shape warnings).
+
+Outcome, all logged to the tracker board same day:
+
+- **Bucket 1** (mechanically enforceable) — 2 found, both already
+  implemented. No board item needed.
+- **Bucket 2** (`instructions.ts` candidate) — 1 found and logged:
+  _"Add cognigyScript undefined-key-omission gotcha to instructions.ts"_
+  (Upstream candidate). Strongest single finding — an undefined value in an
+  object-typed config field silently **omits the key** rather than writing
+  an empty string; severe, cross-cutting, undocumented anywhere.
+- **Bucket 3** (merge into upstream skill) — 16 actionable gaps logged as
+  individual Upstream-candidate items (one per topic, per Ben's choice over
+  one-per-file/consolidated). Standout: the Once/OnFirstTime turn-structure
+  pattern has **zero coverage** in `flow-nodes/SKILL.md` despite being
+  arguably the single most load-bearing structural convention in any
+  Cognigy flow. Also notable: a Voice Gateway gotcha where
+  `ttsVendor`/`sttVendor` silently fall back to `"custom"` if not
+  exact-lowercase.
+- **Bucket 4** (tier-3 lookup-tool candidate) — 1 found: the
+  `outbound-trigger.md` CXone `Accept-Encoding: identity` gotcha (omitting
+  it makes Node 18's undici silently corrupt gzip responses). Folded into
+  the existing _"Propose a scoped tier-3 lookup tool"_ item's body as its
+  first concrete example, rather than a separate item.
+- **4 capability gaps flagged** (not a docs question — missing product
+  surface) — logged as new Triage items: no `update_ai_agent` avatar field,
+  no Cognigy Functions invoke tool, no session context-inject tool, and
+  `sendMetadata`/`hangup` node types missing from `nodeRegistry.ts`. Each
+  needs a build-or-not decision before it's clearly fork-only or
+  upstream-worthy.
+- Full per-topic detail (every one of the 51 files, its bucket, and
+  reasoning) only exists in that fork's completion report inside this
+  conversation transcript — **not persisted anywhere else**. If the
+  reasoning behind a specific board item needs re-deriving, re-run the sort
+  rather than assuming this file has more detail than the bullet points
+  above.
+
+## Pick up here — next steps (as of 2026-09-21)
+
+Board is at 30 items, `Track` field grouping recommended, default view
+narrowed to Title/Status/Track only (see Tracker board section above). None
+of the 21 items produced by the sort have been _acted on_ yet — only
+logged. Suggested order, discussed with Ben but not finally committed:
+
+1. **`Upstream candidate`** (17 items) — mostly independent, small,
+   self-contained skill edits. Good for chipping away individually or
+   batching a few per PR. Remember: cut each PR branch from `upstream/main`,
+   never from `main` (see "Fork workflow" in `.claude/CLAUDE.md`).
+2. **`Triage`** (6 items) — 4 new capability gaps from the sort, plus the
+   pre-existing `design-agent-contracts`/`design-agent-interfaces` recheck,
+   plus Ben's feature-flag request (see below). Each needs a scope decision
+   before it moves to Fork-only or Upstream candidate.
+3. **`Fork-only`** (4 items) — plugin identity rename needs Ben's sign-off
+   explicitly before acting; the rest are mechanical/writing tasks.
+
+**Feature-flag request (new, logged 2026-09-21, Triage):** Ben wants a way
+to disable individual bundled plugin capabilities per-install — the
+concrete example given was turning off the official `docs` MCP server.
+Logged as _"Add a feature-flag mechanism to disable individual plugin
+capabilities"_, with a pointer to the existing
+`COGNIGY_DISABLE_AUDIT_ATTRIBUTION` env-var opt-out pattern in
+`src/config.ts` as a possible shape to extend rather than inventing a new
+mechanism. Not designed or scoped yet — needs a decision on config surface
+(env var vs. `~/.cognigy-plugin/config.json` vs. `userConfig`) and which
+capabilities should be flaggable.
